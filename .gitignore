@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+f1tenth_logs/
+tensorboard_log/
+.DS_Store
+.vscode/
+# *.zip  <-- Uncomment this later if your model files get too big for GitHub
