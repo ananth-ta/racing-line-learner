@@ -5,5 +5,5 @@ Implementing Soft Actor-Critic (SAC) for autonomous racing trajectory optimizati
 
 ## Usage
 - `baseline.py`: Geometric "Follow the Gap" controller.
-- `train.py`: RL training loop (PPO/SAC). (not ready yet)
+- `train.py`: RL training loop (PPO/SAC). 
 - `wrapper.py`: Lidar observation processing.
