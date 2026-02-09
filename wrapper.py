@@ -32,13 +32,29 @@ class F1TenthWrapper(gym.Wrapper):
         return self.process_obs(obs)
 
     def step(self, action):
-        # --- FIX 2: Reshape Action ---
-        # PPO sends a 1D array: [steer, speed]
-        # F1TENTH expects a 2D array: [[steer, speed]]
+        # 1. Reshape Action for F1TENTH
         action_reshaped = np.array([action])
         
-        obs, reward, done, info = self.env.step(action_reshaped)
-        return self.process_obs(obs), reward, done, info
+        # 2. Step the simulator
+        obs, original_reward, done, info = self.env.step(action_reshaped)
+        
+        # 3. CUSTOM REWARD CALCULATION
+        # Extract physics from the observation
+        # (Recall: We put velocity at index -2 in process_obs)
+        current_obs = self.process_obs(obs)
+        velocity = current_obs[-2]
+        
+        # A. Base reward: It feels good to go fast
+        # (We scale it down so the numbers don't get massive)
+        reward = velocity * 0.1
+        
+        # B. Survival Penalty: It hurts A LOT to crash
+        if done:
+            reward = -10.0  # Big penalty for death
+        else:
+            reward += 0.5   # Small bonus just for surviving
+            
+        return current_obs, reward, done, info
 
     def process_obs(self, obs):
         # 1. Get raw lidar
