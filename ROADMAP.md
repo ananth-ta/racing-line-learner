@@ -7,23 +7,31 @@
 - [x] Implement `baseline.py`: "Follow the Gap" geometric controller (Benchmark: 11.64s survival).
 - [x] Implement `train.py`: PPO Training loop verified (Current Avg: 35s survival).
 
-## Phase 2: Reward Function Engineering (Next Step)
-*Focus: Improve lap times, not just survival.*
-- [ ] **Custom Reward:** Modify `wrapper.py` to reward high speed, not just survival.
-- [ ] **Penalty Logic:** Add penalties for frequent steering changes (jitter) to smooth out the drive.
-- [ ] **Curriculum Learning:** Start slow (1 m/s), then increase speed limit as the agent gets smarter.
+## Phase 2: PPO Tuning & Perception (Current Step - Mid Feb)
+*Focus: Improve lap times and bypass the "safety plateau" (Local Optima).*
+- [x] **Custom Reward:** Modify `wrapper.py` to reward high speed (PPO now highly aggressive).
+- [ ] **Braking Logic (The "2 m/s" fix):** Implement a Speed Floor (e.g., `clip(speed, 3.5, 20.0)`) or add massive collision penalties at high velocities to force the agent to learn to brake.
+- [ ] **Observation Stacking:** Stack the last 3 Lidar frames so the PPO agent can perceive acceleration and wall-approach velocity. 
 
-## Phase 3: Algorithm Comparison
-*Focus: Sample Efficiency vs. Stability.*
-- [ ] **SAC (Soft Actor-Critic):** Implement SAC to compare against PPO (SAC is usually better for continuous control like steering).
-- [ ] **Hyperparameter Tuning:** Tune Learning Rate and Batch Size for the specific track dynamics.
+*(Midterms Break: Late Feb to Early March)*
 
-## Phase 4: Perception & Sim-to-Real Prep
-*Focus: Handling noise and realistic constraints.*
-- [ ] **Observation Stacking:** Stack the last 3 frames so the AI can perceive acceleration/jerk.
-- [ ] **Latency Simulation:** Artificially add delay to the wrapper to mimic real-world sensor lag.
-- [ ] **Map Generalization:** Train on 'Vegas', validate on 'Silverstone' map to test generalization.
+## Phase 3: Neuroevolution / Genetic Algorithm (Mid March)
+*Focus: Gradient-Free Exploration vs. Gradient-Based Exploitation.*
+- [ ] **Parallel Environments:** Implement `SubprocVecEnv` to run $N=50$ F1TENTH physics simulations simultaneously across CPU cores.
+- [ ] **Population Initialization:** Initialize a population of 50 Actor networks with random weights.
+- [ ] **Evolutionary Loop:** Implement Evaluation (Lap Distance), Selection (Tournament), Crossover, and Gaussian Mutation. 
+- [ ] **Colab Pro Training:** Offload the 48-hour parallel GA training loop to Google Colab Pro to protect local hardware thermals.
 
-## Phase 5: Advanced Optimization
-- [ ] **Vectorized Environments:** Run 4-8 simulations in parallel to increase FPS from 150 to 1,000+.
-- [ ] **Racing Line Optimization:** Feed the optimal racing line (waypoints) as input to the agent.
+## Phase 4: Hybrid ERL (Stretch Goal - Early April)
+*Focus: Seeding gradient-based optimization with gradient-free exploration.*
+- [ ] **Weight Extraction:** Extract the PyTorch state dictionary from the best-performing Genetic Algorithm agent.
+- [ ] **Brain Transplant:** Load the GA weights into the PPO Actor network.
+- [ ] **The "Blind Critic" Fix:** Freeze the Actor network (`requires_grad=False`), run the simulation, and train the PPO Critic to map the state-values without causing catastrophic forgetting.
+- [ ] **Fine-Tuning:** Unfreeze the Actor, drop the learning rate, and let PPO optimize the GA's racing line.
+
+## Phase 5: Synthesis & Evaluation (Mid-April)
+*Focus: Data analysis and final report generation.*
+- [ ] **Statistical Sweeps:** Run 5 different random seeds for the final PPO and GA models to generate reliable performance curves.
+- [ ] **Visual Analysis:** Use `render_video.py` to generate side-by-side comparisons of PPO vs. GA optimal racing lines.
+- [ ] **Report Formatting:** Convert findings into the mandatory 2-column, US Letter AAAI conference paper LaTeX format.
+- [ ] **Submission:** Submit final PDF report and code repository (Due April 22nd).
