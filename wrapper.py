@@ -1,10 +1,13 @@
 import gym
 import numpy as np
 from gym import spaces
+from collections import deque
 
 class F1TenthWrapper(gym.Wrapper):
-    def __init__(self, env):
+    def __init__(self, env, n_stack=3):
         super().__init__(env)
+        
+        self.n_stack = n_stack
         
         # --- FIX 1: Manually define the Action Space ---
         # PPO needs to know the limits of the controls.
@@ -16,12 +19,23 @@ class F1TenthWrapper(gym.Wrapper):
             dtype=np.float32
         )
         
-        # --- Define Observation Space (20 Lidar + 2 Physics) ---
+        # --- Define Observation Space (20 Lidar + 2 Physics) * n_stack ---
         self.lidar_rays = 20
+        self.obs_dim = self.lidar_rays + 2
         # Use -inf to inf to prevent crashes if a value goes slightly negative
-        low = -np.inf * np.ones(self.lidar_rays + 2)
-        high = np.inf * np.ones(self.lidar_rays + 2)
+        low = -np.inf * np.ones(self.obs_dim * self.n_stack)
+        high = np.inf * np.ones(self.obs_dim * self.n_stack)
         self.observation_space = spaces.Box(low, high, dtype=np.float32)
+        
+        # Frame stack buffer
+        self.frames = deque(maxlen=self.n_stack)
+        
+        # Steering smoothing tracker
+        self.prev_steering = 0.0
+        
+        # v5: Mechanical steering damper (EMA Filter)
+        self.actual_steering = 0.0
+        self.alpha = 0.3
 
     def reset(self, **kwargs):
         # FIX: If SB3 calls reset() without a position, inject a default one.
@@ -29,32 +43,64 @@ class F1TenthWrapper(gym.Wrapper):
             kwargs['poses'] = np.array([[0.0, 0.0, 0.0]])
         # Handle the F1TENTH tuple return
         obs, reward, done, info = self.env.reset(**kwargs)
-        return self.process_obs(obs)
+        
+        processed_obs = self.process_obs(obs)
+        for _ in range(self.n_stack):
+            self.frames.append(processed_obs)
+            
+        self.prev_steering = 0.0
+        self.actual_steering = 0.0
+            
+        return self._get_stacked_obs()
 
     def step(self, action):
+        # Extract raw target steering from AI
+        target_steering = action[0]
+        
+        # v5: Apply EMA Low-Pass Filter (Mechanical Damper)
+        self.actual_steering = (self.alpha * target_steering) + ((1.0 - self.alpha) * self.actual_steering)
+        
+        # Override AI action with physically smoothed steering
+        action[0] = self.actual_steering
+        
         # 1. Reshape Action for F1TENTH
-        action_reshaped = np.array([action])
+        # Apply Speed Floor: Clip speed to [4.5, 20.0]
+        steer = action[0]
+        speed = np.clip(action[1], 4.5, 20.0)
+        action_reshaped = np.array([[steer, speed]])
         
         # 2. Step the simulator
         obs, original_reward, done, info = self.env.step(action_reshaped)
         
-        # 3. CUSTOM REWARD CALCULATION
+        # 3. Process observation and update stack
+        current_processed = self.process_obs(obs)
+        self.frames.append(current_processed)
+        stacked_obs = self._get_stacked_obs()
+        
+        # 4. CUSTOM REWARD CALCULATION
         # Extract physics from the observation
         # (Recall: We put velocity at index -2 in process_obs)
-        current_obs = self.process_obs(obs)
-        velocity = current_obs[-2]
+        velocity = current_processed[-2]
         
-        # A. Base reward: It feels good to go fast
-        # (We scale it down so the numbers don't get massive)
-        reward = velocity * 0.1
+        # Calculate steering jitter penalty
+        # Note: We penalize the RAW target output, not the damped physical steering
+        current_steering = target_steering
+        steering_diff = abs(current_steering - self.prev_steering)
+        self.prev_steering = current_steering
+        jitter_penalty = steering_diff * 0.05
         
-        # B. Survival Penalty: It hurts A LOT to crash
+        # A. Gaussian Speed Reward
+        target_speed = 7.0
+        variance = 2.0
+        speed_reward = np.exp(-((velocity - target_speed)**2) / (2 * variance**2))
+        
+        # B. Survival Penalty & Jitter smoothing
         if done:
-            reward = -10.0  # Big penalty for death
+            reward = -10.0  # Big penalty for death (overrides other rewards)
         else:
-            reward += 0.5   # Small bonus just for surviving
+            reward = (speed_reward * 2.0) - jitter_penalty
             
-        return current_obs, reward, done, info
+        return stacked_obs, reward, done, info
 
     def process_obs(self, obs):
         # 1. Get raw lidar
@@ -71,3 +117,7 @@ class F1TenthWrapper(gym.Wrapper):
         # 4. Concatenate
         final_obs = np.concatenate([downsampled_scans, velocity, yaw_rate])
         return final_obs.astype(np.float32)
+
+    def _get_stacked_obs(self):
+        assert len(self.frames) == self.n_stack
+        return np.concatenate(self.frames)

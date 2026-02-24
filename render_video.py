@@ -32,7 +32,7 @@ from wrapper import F1TenthWrapper
 # ============================================================================
 
 MAP_NAME = 'maps/vegas'
-MODEL_PATH = 'f1tenth_ppo_v1.zip'
+MODEL_PATH = 'models/ppo/f1tenth_ppo_v4A.zip'
 OUTPUT_DIR = 'videos'
 MAX_STEPS = 2000          # Max steps per episode
 FPS = 30                  # Output video framerate
@@ -319,14 +319,16 @@ def record_episode(policy_fn, agent_name="Agent", max_steps=MAX_STEPS):
             }
         except Exception as e:
             # Fallback: construct from wrapped observation
+            # with n_stack=3, current obs is the last 22 elements
+            current_obs = wrapped_obs[-22:]  
             raw_obs = {
                 'poses_x': [0.0],
                 'poses_y': [0.0],
                 'poses_theta': [0.0],
-                'linear_vels_x': [wrapped_obs[-2]],  # velocity from wrapped obs
+                'linear_vels_x': [current_obs[-2]],  # velocity from wrapped obs
                 'linear_vels_y': [0.0],
-                'ang_vels_z': [wrapped_obs[-1]],     # yaw rate from wrapped obs
-                'scans': [np.array(list(wrapped_obs[:-2]) * 54)],  # Expand 20 rays back to ~1080
+                'ang_vels_z': [current_obs[-1]],     # yaw rate from wrapped obs
+                'scans': [np.array(list(current_obs[:-2]) * 54)],  # Expand 20 rays back to ~1080
             }
             if step == 0:
                 print(f"  Warning: Using fallback observation extraction: {e}")

@@ -6,8 +6,8 @@ from wrapper import F1TenthWrapper
 
 # --- Configuration ---
 MAP_NAME = 'maps/vegas' 
-TIMESTEPS = 50000       # 50k steps is a good "overnight" start (approx 20-30 mins)
-MODEL_NAME = "f1tenth_ppo_v1"
+TIMESTEPS = 500000       # v6 Gaussian reward from scratch
+MODEL_NAME = "models/ppo/f1tenth_ppo_v6"
 
 def main():
     print(f"Loading Map: {MAP_NAME}")
@@ -29,7 +29,7 @@ def main():
     # MlpPolicy: Standard Dense Neural Network (Good for vector inputs)
     # verbose=1: Print training stats to terminal
     # tensorboard_log: Save graphs to track learning curve
-    print("Initializing PPO Agent...")
+    print("Initializing PPO Agent (v6 from scratch)...")
     model = PPO(
         "MlpPolicy", 
         env, 

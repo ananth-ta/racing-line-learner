@@ -10,8 +10,8 @@
 ## Phase 2: PPO Tuning & Perception (Current Step - Mid Feb)
 *Focus: Improve lap times and bypass the "safety plateau" (Local Optima).*
 - [x] **Custom Reward:** Modify `wrapper.py` to reward high speed (PPO now highly aggressive).
-- [ ] **Braking Logic (The "2 m/s" fix):** Implement a Speed Floor (e.g., `clip(speed, 3.5, 20.0)`) or add massive collision penalties at high velocities to force the agent to learn to brake.
-- [ ] **Observation Stacking:** Stack the last 3 Lidar frames so the PPO agent can perceive acceleration and wall-approach velocity. 
+- [x] **Braking Logic (The "2 m/s" fix):** Implement a Speed Floor (e.g., `clip(speed, 3.5, 20.0)`) or add massive collision penalties at high velocities to force the agent to learn to brake.
+- [x] **Observation Stacking:** Stack the last 3 Lidar frames so the PPO agent can perceive acceleration and wall-approach velocity. 
 
 *(Midterms Break: Late Feb to Early March)*
 
