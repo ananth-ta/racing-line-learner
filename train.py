@@ -1,35 +1,56 @@
 import gym
 import numpy as np
+import argparse
+import os
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
+from stable_baselines3.common.callbacks import CheckpointCallback
 from wrapper import F1TenthWrapper
 
 # --- Configuration ---
 MAP_NAME = 'maps/vegas' 
-TIMESTEPS = 500000       # v6 Gaussian reward from scratch
-MODEL_NAME = "models/ppo/f1tenth_ppo_v6"
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train PPO agent for F1Tenth.")
+    parser.add_argument(
+        "--timesteps", 
+        type=int, 
+        default=500000, 
+        help="Total number of training timesteps (default: 500000)"
+    )
+    parser.add_argument(
+        "--model_name", 
+        type=str, 
+        default="f1tenth_ppo_v7", 
+        help="Name of the final saved model zip file (default: f1tenth_ppo_v7)"
+    )
+    parser.add_argument(
+        "--save_dir", 
+        type=str, 
+        default="models/ppo/", 
+        help="Directory where the final model will be saved (default: models/ppo/)"
+    )
+    parser.add_argument(
+        "--checkpoint_dir", 
+        type=str, 
+        default=None, 
+        help="Directory for periodic checkpoints. If None, no checkpoints are saved."
+    )
+    return parser.parse_args()
 
 def main():
+    args = parse_args()
+    
     print(f"Loading Map: {MAP_NAME}")
     
     # 1. Create the Environment
-    # We load the 'vegas' map we set up earlier
     env = gym.make('f110_gym:f110-v0', map=MAP_NAME, map_ext='.png', num_agents=1)
     
     # 2. Apply our Wrapper
-    # This converts the 1080-point Lidar scan into a clean 22-float vector
     env = F1TenthWrapper(env)
     
-    # 3. Sanity Check (Optional)
-    # This checks if our wrapper follows the Gym standard. 
-    # If this fails, SB3 will likely crash later.
-    # check_env(env)  # <--- Uncomment if you want to verify your wrapper logic
-
-    # 4. Initialize the Agent (PPO)
-    # MlpPolicy: Standard Dense Neural Network (Good for vector inputs)
-    # verbose=1: Print training stats to terminal
-    # tensorboard_log: Save graphs to track learning curve
-    print("Initializing PPO Agent (v6 from scratch)...")
+    # 3. Initialize the Agent (PPO)
+    print(f"Initializing PPO Agent ({args.model_name})...")
     model = PPO(
         "MlpPolicy", 
         env, 
@@ -40,16 +61,26 @@ def main():
         gamma=0.99
     )
 
-    # 5. Train
-    print(f"Starting training for {TIMESTEPS} steps...")
-    # The progress bar will show 'fps' (frames per second). 
-    # On an RTX 4070, this should fly (1000+ fps).
-    model.learn(total_timesteps=TIMESTEPS)
+    # 4. Setup Callbacks
+    callback = None
+    if args.checkpoint_dir:
+        print(f"Checkpointing enabled. Saving to: {args.checkpoint_dir}")
+        os.makedirs(args.checkpoint_dir, exist_ok=True)
+        callback = CheckpointCallback(
+            save_freq=100000, 
+            save_path=args.checkpoint_dir,
+            name_prefix=args.model_name
+        )
 
-    # 6. Save the Model
-    # This creates a .zip file you can load later
-    model.save(MODEL_NAME)
-    print(f"Training complete! Model saved to '{MODEL_NAME}.zip'")
+    # 5. Train
+    print(f"Starting training for {args.timesteps} steps...")
+    model.learn(total_timesteps=args.timesteps, callback=callback)
+
+    # 6. Save the Final Model
+    os.makedirs(args.save_dir, exist_ok=True)
+    final_model_path = os.path.join(args.save_dir, args.model_name)
+    model.save(final_model_path)
+    print(f"Training complete! Final model saved to '{final_model_path}.zip'")
 
     # 7. Close Environment
     env.close()

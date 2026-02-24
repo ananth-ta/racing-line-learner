@@ -7,7 +7,7 @@
 - [x] Implement `baseline.py`: "Follow the Gap" geometric controller (Benchmark: 11.64s survival).
 - [x] Implement `train.py`: PPO Training loop verified (Current Avg: 35s survival).
 
-## Phase 2: PPO Tuning & Perception (Current Step - Mid Feb)
+## Phase 2: PPO Tuning & Perception ✅ (Completed Mid Feb)
 *Focus: Improve lap times and bypass the "safety plateau" (Local Optima).*
 - [x] **Custom Reward:** Modify `wrapper.py` to reward high speed (PPO now highly aggressive).
 - [x] **Braking Logic (The "2 m/s" fix):** Implement a Speed Floor (e.g., `clip(speed, 3.5, 20.0)`) or add massive collision penalties at high velocities to force the agent to learn to brake.
@@ -15,10 +15,10 @@
 
 *(Midterms Break: Late Feb to Early March)*
 
-## Phase 3: Neuroevolution / Genetic Algorithm (Mid March)
+## Phase 3: Neuroevolution / Genetic Algorithm (Current Step - Mid March)
 *Focus: Gradient-Free Exploration vs. Gradient-Based Exploitation.*
-- [ ] **Parallel Environments:** Implement `SubprocVecEnv` to run $N=50$ F1TENTH physics simulations simultaneously across CPU cores.
-- [ ] **Population Initialization:** Initialize a population of 50 Actor networks with random weights.
+- [x] **Parallel Environments:** Implement `SubprocVecEnv` to run $N=50$ F1TENTH physics simulations simultaneously across CPU cores.
+- [x] **Population Initialization:** Initialize a population of 50 Actor networks with random weights.
 - [ ] **Evolutionary Loop:** Implement Evaluation (Lap Distance), Selection (Tournament), Crossover, and Gaussian Mutation. 
 - [ ] **Colab Pro Training:** Offload the 48-hour parallel GA training loop to Google Colab Pro to protect local hardware thermals.
 

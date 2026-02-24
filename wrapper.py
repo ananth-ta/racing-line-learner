@@ -9,6 +9,16 @@ class F1TenthWrapper(gym.Wrapper):
         
         self.n_stack = n_stack
         
+        # --- Checkpoint System (Vegas Map Approximate Sectors) ---
+        self.checkpoints = [
+            np.array([1.5, 7.5]),     # Checkpoint 1: First Corner Entry
+            np.array([-5.0, 7.5]),    # Checkpoint 2: Back Straight Entry
+            np.array([-5.0, -8.0]),   # Checkpoint 3: Back Straight Exit
+            np.array([1.5, -8.0]),    # Checkpoint 4: Final Corner Entry
+        ]
+        self.checkpoint_radius = 2.5  # Meters
+        self.current_checkpoint_idx = 0
+        
         # --- FIX 1: Manually define the Action Space ---
         # PPO needs to know the limits of the controls.
         # We define a Box: [Steering Angle, Speed]
@@ -50,6 +60,7 @@ class F1TenthWrapper(gym.Wrapper):
             
         self.prev_steering = 0.0
         self.actual_steering = 0.0
+        self.current_checkpoint_idx = 0
             
         return self._get_stacked_obs()
 
@@ -100,6 +111,23 @@ class F1TenthWrapper(gym.Wrapper):
         else:
             reward = (speed_reward * 2.0) - jitter_penalty
             
+        # 5. Checkpoint Tracking (Injected into 'info' dict for backwards compatibility)
+        agent_x = obs['poses_x'][0]
+        agent_y = obs['poses_y'][0]
+        agent_pos = np.array([agent_x, agent_y])
+        
+        checkpoint_cleared = False
+        if self.current_checkpoint_idx < len(self.checkpoints):
+            target_cp = self.checkpoints[self.current_checkpoint_idx]
+            dist = np.linalg.norm(agent_pos - target_cp)
+            if dist < self.checkpoint_radius:
+                self.current_checkpoint_idx += 1
+                checkpoint_cleared = True
+                
+        # Inject tracking data into the info dict so PPO ignores it, but GA can use it
+        info['checkpoint_cleared'] = checkpoint_cleared
+        info['current_checkpoint_idx'] = self.current_checkpoint_idx
+        
         return stacked_obs, reward, done, info
 
     def process_obs(self, obs):
