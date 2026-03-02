@@ -3,6 +3,7 @@ import re
 import os
 import torch
 import numpy as np
+import gym
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from wrapper import F1TenthWrapper
 from ga_model import MutantMLP
