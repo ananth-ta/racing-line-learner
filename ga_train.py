@@ -22,11 +22,14 @@ def make_env(rank):
         return env
     return _init
 
-def evaluate_population(env, population):
+def evaluate_population(env, population, current_gen, total_gens):
     num_envs = len(population)
     fitness_scores = np.zeros(num_envs)
     active_envs = np.ones(num_envs, dtype=bool)
     time_since_last_cp = np.zeros(num_envs)
+    
+    # Curriculum Learning: Scale steering penalty from 0.0 to 2.0 linearly
+    penalty_weight = 2.0 * (max(0, current_gen - 1) / max(1, total_gens - 1))
     
     # Stagnation limit: If 3000 timesteps pass without hitting the next checkpoint, kill the mutant.
     STAGNATION_LIMIT = 3000
@@ -63,9 +66,8 @@ def evaluate_population(env, population):
                 step_score = rewards[i] 
                 
                 # Heavy quadratic penalty for sharp turning to stop donuts. 
-                # A slight turn (0.1) gets 0.05 penalty, a full lock turn (1.0) gets 5.0 penalty.
-                # This balances necessary sharp turns against continuous donuts.
-                steering_penalty = (abs(steering) ** 2) * 5.0 
+                # Curriculum learning scales this penalty dynamically.
+                steering_penalty = (abs(steering) ** 2) * penalty_weight 
                 
                 fitness_scores[i] += (step_score - steering_penalty)
                 
@@ -75,7 +77,7 @@ def evaluate_population(env, population):
                 # Checkpoint Progression Check
                 if infos[i].get('checkpoint_cleared', False):
                     # Massive reward for clearing a checkpoint
-                    fitness_scores[i] += 500.0
+                    fitness_scores[i] += 5000.0
                     time_since_last_cp[i] = 0
                 else:
                     time_since_last_cp[i] += 1
@@ -148,30 +150,21 @@ if __name__ == '__main__':
         # Find the file with the highest generation number using regex
         latest_cp = max(checkpoint_files, key=lambda x: int(re.search(r'gen_(\d+)', x).group(1)))
         
-        while True:
-            ans = input(f"Found checkpoint {latest_cp}. Resume from this checkpoint? (y/n): ").strip().lower()
-            if ans in ['y', 'yes', 'n', 'no']:
-                break
-            print("Please enter 'y' or 'n'.")
-            
-        if ans in ['y', 'yes']:
-            # Extract the generation number to know where to resume
-            last_gen = int(re.search(r'gen_(\d+)', latest_cp).group(1))
-            start_gen = last_gen + 1
-            
-            # Load the champion's brain into the #1 slot of the new population
-            population[0].load_state_dict(torch.load(latest_cp))
-            
-            print(f"🔄 Resuming from {latest_cp}. Loaded champion weights. Starting at Generation {start_gen}.")
-        else:
-            print(f"Initialized fresh Genetic Algorithm loop with {num_envs} Parallel Environments and {len(population)} initial mutants.")
+        # Extract the generation number to know where to resume
+        last_gen = int(re.search(r'gen_(\d+)', latest_cp).group(1))
+        start_gen = last_gen + 1
+        
+        # Load the champion's brain into the #1 slot of the new population
+        population[0].load_state_dict(torch.load(latest_cp))
+        
+        print(f"🔄 Auto-Resuming from {latest_cp} for headless execution. Loaded champion weights. Starting at Generation {start_gen}.")
     else:
         print(f"Initialized fresh Genetic Algorithm loop with {num_envs} Parallel Environments and {len(population)} initial mutants.")
     # -------------------------
     
     for gen in range(start_gen, num_generations + 1):
         # Evaluate the current population
-        fitness_scores = evaluate_population(env, population)
+        fitness_scores = evaluate_population(env, population, gen, num_generations)
         
         # Logging
         max_fitness = np.max(fitness_scores)
