@@ -1,4 +1,4 @@
-# 🏁 Project Roadmap: F1TENTH Autonomous Racing
+# Project Roadmap: F1TENTH Autonomous Racing
 
 ## Phase 1: Infrastructure & Setup ✅ (Completed Jan 2026)
 - [x] Configure WSL2 with CUDA/GPU support (RTX 4070).

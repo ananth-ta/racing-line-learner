@@ -61,6 +61,7 @@ class F1TenthWrapper(gym.Wrapper):
         self.prev_steering = 0.0
         self.actual_steering = 0.0
         self.current_checkpoint_idx = 0
+        self.prev_distance = None
             
         return self._get_stacked_obs()
 
@@ -111,22 +112,36 @@ class F1TenthWrapper(gym.Wrapper):
         else:
             reward = (speed_reward * 2.0) - jitter_penalty
             
-        # 5. Checkpoint Tracking (Injected into 'info' dict for backwards compatibility)
+        # 5. Checkpoint Tracking & Distance Progress Reward
         agent_x = obs['poses_x'][0]
         agent_y = obs['poses_y'][0]
         agent_pos = np.array([agent_x, agent_y])
         
         checkpoint_cleared = False
+        progress_reward = 0.0
+        
         if self.current_checkpoint_idx < len(self.checkpoints):
             target_cp = self.checkpoints[self.current_checkpoint_idx]
             dist = np.linalg.norm(agent_pos - target_cp)
+            
+            if self.prev_distance is None:
+                self.prev_distance = dist
+                
+            distance_closed = self.prev_distance - dist
+            progress_reward = distance_closed * 10.0
+            
             if dist < self.checkpoint_radius:
                 self.current_checkpoint_idx += 1
                 checkpoint_cleared = True
+                progress_reward = 0.0  # Reset for this step so we don't penalize the jump
+                self.prev_distance = None  # Will be recalculated next step against new target
+            else:
+                self.prev_distance = dist
                 
         # Inject tracking data into the info dict so PPO ignores it, but GA can use it
         info['checkpoint_cleared'] = checkpoint_cleared
         info['current_checkpoint_idx'] = self.current_checkpoint_idx
+        info['progress_reward'] = progress_reward
         
         return stacked_obs, reward, done, info
 

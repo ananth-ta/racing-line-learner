@@ -61,15 +61,17 @@ def evaluate_population(env, population, current_gen, total_gens):
             if active_envs[i]:
                 steering = actions[i][0]
                 
-                # Base score for surviving a step, substituting raw survival (+1)
-                # with the continuous velocity/target rewards evaluated by the wrapper.
-                step_score = rewards[i] 
+                # Extract continuous distance-closed reward from environment info to combat U-turn farming
+                progress_score = infos[i].get('progress_reward', 0.0)
+                
+                # Base wrapper reward (contains Gaussian speed incentive, jitter penalty, collision penalty)
+                env_reward = rewards[i]
                 
                 # Heavy quadratic penalty for sharp turning to stop donuts. 
                 # Curriculum learning scales this penalty dynamically.
                 steering_penalty = (abs(steering) ** 2) * penalty_weight 
                 
-                fitness_scores[i] += (step_score - steering_penalty)
+                fitness_scores[i] += (env_reward + progress_score - steering_penalty)
                 
                 if dones[i]:
                     active_envs[i] = False
