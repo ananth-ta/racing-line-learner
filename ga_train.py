@@ -71,15 +71,16 @@ def evaluate_population(env, population, current_gen, total_gens):
                 # Curriculum learning scales this penalty dynamically.
                 steering_penalty = (abs(steering) ** 2) * penalty_weight 
                 
-                fitness_scores[i] += (env_reward + progress_score - steering_penalty)
+                # Waypoint Progression Check
+                waypoint_cleared = infos[i].get('waypoint_cleared', False)
+                waypoint_bonus = 50.0 if waypoint_cleared else 0.0
+                
+                fitness_scores[i] += (env_reward + progress_score + waypoint_bonus - steering_penalty)
                 
                 if dones[i]:
                     active_envs[i] = False
                 
-                # Checkpoint Progression Check
-                if infos[i].get('checkpoint_cleared', False):
-                    # Massive reward for clearing a checkpoint
-                    fitness_scores[i] += 5000.0
+                if waypoint_cleared:
                     time_since_last_cp[i] = 0
                 else:
                     time_since_last_cp[i] += 1

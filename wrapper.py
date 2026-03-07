@@ -9,15 +9,22 @@ class F1TenthWrapper(gym.Wrapper):
         
         self.n_stack = n_stack
         
-        # --- Checkpoint System (Vegas Map Approximate Sectors) ---
-        self.checkpoints = [
-            np.array([1.5, 7.5]),     # Checkpoint 1: First Corner Entry
-            np.array([-5.0, 7.5]),    # Checkpoint 2: Back Straight Entry
-            np.array([-5.0, -8.0]),   # Checkpoint 3: Back Straight Exit
-            np.array([1.5, -8.0]),    # Checkpoint 4: Final Corner Entry
-        ]
-        self.checkpoint_radius = 2.5  # Meters
-        self.current_checkpoint_idx = 0
+        # --- Waypoint System (Vegas Optimal Line) ---
+        import csv
+        self.waypoints = []
+        try:
+            with open('maps/vegas_optimal_line.csv', 'r') as f:
+                reader = csv.reader(f)
+                next(reader, None)  # Skip header
+                for row in reader:
+                    if row:
+                        self.waypoints.append(np.array([float(row[0]), float(row[1])]))
+        except Exception as e:
+            print(f"Error loading Vegas optimal line: {e}")
+            self.waypoints = [np.array([0.0, 0.0])]
+            
+        self.checkpoint_radius = 1.5  # Meters (Capture radius for waypoints)
+        self.current_waypoint_idx = 0
         
         # --- FIX 1: Manually define the Action Space ---
         # PPO needs to know the limits of the controls.
@@ -60,7 +67,7 @@ class F1TenthWrapper(gym.Wrapper):
             
         self.prev_steering = 0.0
         self.actual_steering = 0.0
-        self.current_checkpoint_idx = 0
+        self.current_waypoint_idx = 0
         self.prev_distance = None
             
         return self._get_stacked_obs()
@@ -112,16 +119,16 @@ class F1TenthWrapper(gym.Wrapper):
         else:
             reward = (speed_reward * 2.0) - jitter_penalty
             
-        # 5. Checkpoint Tracking & Distance Progress Reward
+        # 5. Waypoint Tracking & Distance Progress Reward
         agent_x = obs['poses_x'][0]
         agent_y = obs['poses_y'][0]
         agent_pos = np.array([agent_x, agent_y])
         
-        checkpoint_cleared = False
+        waypoint_cleared = False
         progress_reward = 0.0
         
-        if self.current_checkpoint_idx < len(self.checkpoints):
-            target_cp = self.checkpoints[self.current_checkpoint_idx]
+        if self.waypoints:
+            target_cp = self.waypoints[self.current_waypoint_idx]
             dist = np.linalg.norm(agent_pos - target_cp)
             
             if self.prev_distance is None:
@@ -131,16 +138,18 @@ class F1TenthWrapper(gym.Wrapper):
             progress_reward = distance_closed * 10.0
             
             if dist < self.checkpoint_radius:
-                self.current_checkpoint_idx += 1
-                checkpoint_cleared = True
+                self.current_waypoint_idx = (self.current_waypoint_idx + 1) % len(self.waypoints)
+                waypoint_cleared = True
                 progress_reward = 0.0  # Reset for this step so we don't penalize the jump
-                self.prev_distance = None  # Will be recalculated next step against new target
+                # Calculate distance to the NEW waypoint immediately
+                new_target = self.waypoints[self.current_waypoint_idx]
+                self.prev_distance = np.linalg.norm(agent_pos - new_target)
             else:
                 self.prev_distance = dist
                 
         # Inject tracking data into the info dict so PPO ignores it, but GA can use it
-        info['checkpoint_cleared'] = checkpoint_cleared
-        info['current_checkpoint_idx'] = self.current_checkpoint_idx
+        info['waypoint_cleared'] = waypoint_cleared
+        info['current_waypoint_idx'] = self.current_waypoint_idx
         info['progress_reward'] = progress_reward
         
         return stacked_obs, reward, done, info
