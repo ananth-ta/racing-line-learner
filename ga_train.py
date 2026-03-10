@@ -27,12 +27,13 @@ def evaluate_population(env, population, current_gen, total_gens):
     fitness_scores = np.zeros(num_envs)
     active_envs = np.ones(num_envs, dtype=bool)
     time_since_last_cp = np.zeros(num_envs)
+    has_cleared_first_cp = np.zeros(num_envs, dtype=bool)
     
     # Curriculum Learning: Scale steering penalty from 0.0 to 2.0 linearly
     penalty_weight = 2.0 * (max(0, current_gen - 1) / max(1, total_gens - 1))
     
-    # Stagnation limit: If 3000 timesteps pass without hitting the next checkpoint, kill the mutant.
-    STAGNATION_LIMIT = 100  # Aggressively kill mutants that are too slow
+    STAGNATION_LIMIT = 250  # Limit between gates
+    INITIAL_STAGNATION_LIMIT = 1000  # Give early mutants 10 seconds to find the very first waypoint
     
     # Reset the VecEnv
     obs = env.reset()
@@ -73,7 +74,9 @@ def evaluate_population(env, population, current_gen, total_gens):
                 
                 # Waypoint Progression Check
                 waypoint_cleared = infos[i].get('waypoint_cleared', False)
-                if waypoint_cleared:
+                progress_reward = infos[i].get('progress_reward', 0.0)
+                
+                if waypoint_cleared and progress_reward >= 0:
                     steps_taken = max(1, infos[i].get('steps_taken', 100))
                     # Massive speed incentive based on sector time
                     waypoint_bonus = 1000.0 / steps_taken
@@ -89,12 +92,15 @@ def evaluate_population(env, population, current_gen, total_gens):
                 
                 if waypoint_cleared:
                     time_since_last_cp[i] = 0
+                    has_cleared_first_cp[i] = True
                 else:
                     time_since_last_cp[i] += 1
                     
                 # Stagnation Pruning
-                if time_since_last_cp[i] > STAGNATION_LIMIT:
+                current_stagnation_limit = STAGNATION_LIMIT if has_cleared_first_cp[i] else INITIAL_STAGNATION_LIMIT
+                if time_since_last_cp[i] > current_stagnation_limit:
                     active_envs[i] = False
+                    fitness_scores[i] -= 1000.0
                     
         step_count += 1
 

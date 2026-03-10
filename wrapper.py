@@ -18,14 +18,17 @@ class F1TenthWrapper(gym.Wrapper):
             with open('maps/vegas_optimal_line.csv', 'r') as f:
                 reader = csv.reader(f)
                 next(reader, None)  # Skip header
+                all_wps = []
                 for row in reader:
                     if row:
-                        self.waypoints.append(np.array([float(row[0]), float(row[1])]))
+                        all_wps.append(np.array([float(row[0]), float(row[1])]))
+                # Downsample waypoints: take every 10th waypoint so agents don't skip over them going too fast
+                self.waypoints = all_wps[::10]
         except Exception as e:
             print(f"Error loading Vegas optimal line: {e}")
             self.waypoints = [np.array([0.0, 0.0])]
             
-        self.checkpoint_radius = 1.5  # Meters (Capture radius for waypoints)
+        self.checkpoint_radius = 4.0  # Meters (Capture radius for waypoints, increased for sparser gates)
         self.current_waypoint_idx = 0
         
         # --- FIX 1: Manually define the Action Space ---
@@ -76,10 +79,20 @@ class F1TenthWrapper(gym.Wrapper):
             
         self.prev_steering = 0.0
         self.actual_steering = 0.0
-        self.current_waypoint_idx = 0
-        self.prev_distance = None
-        self.action_history = deque([(0.0, 0.0)] * 3, maxlen=3)
         self.steps_since_last_gate = 0
+        self.action_history = deque([(0.0, 0.0)] * 3, maxlen=3)
+        
+        # Dynamically target the closest waypoint to the spawn location
+        if self.waypoints:
+            agent_pos = np.array([obs['poses_x'][0], obs['poses_y'][0]])
+            distances = [np.linalg.norm(agent_pos - wp) for wp in self.waypoints]
+            self.current_waypoint_idx = int(np.argmin(distances))
+            # Advance by 1 to target the *next* waypoint, not the one we are sitting on
+            self.current_waypoint_idx = (self.current_waypoint_idx + 1) % len(self.waypoints)
+            self.prev_distance = np.linalg.norm(agent_pos - self.waypoints[self.current_waypoint_idx])
+        else:
+            self.current_waypoint_idx = 0
+            self.prev_distance = None
             
         return self._get_stacked_obs()
 
@@ -111,9 +124,8 @@ class F1TenthWrapper(gym.Wrapper):
         stacked_obs = self._get_stacked_obs()
         
         # 4. CUSTOM REWARD CALCULATION
-        # Extract physics from the observation
-        # (Recall: We put velocity at index -2 in process_obs)
-        velocity = current_processed[-2]
+        # Extract physics from the raw observation dict directly
+        velocity = float(obs['linear_vels_x'][0])
         
         # Calculate steering jitter penalty
         # Note: We penalize the RAW target output, not the damped physical steering
@@ -123,30 +135,34 @@ class F1TenthWrapper(gym.Wrapper):
         jitter_penalty = steering_diff * 0.05
         
         # A. Gaussian Speed Reward
-        target_speed = 7.0
-        variance = 2.0
-        speed_reward = np.exp(-((velocity - target_speed)**2) / (2 * variance**2))
+        target_speed_gauss = 10.0  # Increased peak speed incentive
+        variance = 3.0             # Widened variance to allow for smooth acceleration
+        speed_reward = np.exp(-((velocity - target_speed_gauss)**2) / (2 * variance**2))
         
         # 5. Waypoint Tracking & Distance Progress Reward
         agent_x = obs['poses_x'][0]
         agent_y = obs['poses_y'][0]
         agent_pos = np.array([agent_x, agent_y])
         
-        # B. Survival Penalty & Jitter smoothing
+        # B. Base Reward & Jitter smoothing
         if done:
-            reward = -1000.0  # Severe anti-suicide penalty for death
+            reward = -1000.0  
         else:
-            reward = (speed_reward * 2.0) - jitter_penalty
+            # PPO gets the Gaussian speed reward to learn basic throttle control
             if self.algo == 'ppo':
-                reward -= 0.1  # Time Penalty for slow driving
+                reward = (speed_reward * 2.0) - jitter_penalty
                 if self.waypoints:
                     target_cp = self.waypoints[self.current_waypoint_idx]
                     cte = np.linalg.norm(agent_pos - target_cp)
-                    reward -= (cte * 0.1)  # Cross-Track Error Penalty
+                    reward -= (cte * 0.1)  
+            else:
+                # GA gets EXACTLY ZERO base reward. It must earn distance points to survive.
+                reward = -jitter_penalty
         
         waypoint_cleared = False
         progress_reward = 0.0
         distance_closed = 0.0
+        direction_debuff = 0.0
         self.steps_since_last_gate += 1
         
         if self.waypoints:
@@ -157,14 +173,21 @@ class F1TenthWrapper(gym.Wrapper):
                 self.prev_distance = dist
                 
             distance_closed = self.prev_distance - dist
-            # Anti-donut zeroing: agent must move forward above low-speed to extract points
+            
+            # Direction Debuff: If distance_closed is negative, the agent is moving away from the gate
+            if distance_closed < 0:
+                direction_debuff = abs(distance_closed) * 100.0  # Double penalty for wrong direction
+                if self.algo == 'ppo':
+                    reward -= direction_debuff
+            
+            # Anti-donut zeroing
             if self.algo == 'ga':
-                if float(velocity) > 2.0:
+                if float(velocity) > 2.0 and distance_closed > 0:
                     progress_reward = distance_closed * 100.0
                 else:
-                    progress_reward = 0.0
+                    progress_reward = -direction_debuff  # Punish wrong way heavily
             else:
-                progress_reward = distance_closed * 10.0
+                progress_reward = (distance_closed * 10.0) - direction_debuff
             
             if dist < self.checkpoint_radius:
                 self.current_waypoint_idx = (self.current_waypoint_idx + 1) % len(self.waypoints)
