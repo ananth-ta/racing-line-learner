@@ -38,9 +38,11 @@ class F1TenthWrapper(gym.Wrapper):
             dtype=np.float32
         )
         
-        # --- Define Observation Space (20 Lidar + 3 Physics: Vel, Yaw, Heading Error) * n_stack ---
+        # --- Define Observation Space ---
         self.lidar_rays = 20
-        self.obs_dim = self.lidar_rays + (3 if self.algo == 'ga' else 2)
+        # GA: 20 Lidar + 3 Physics (Vel, Yaw, Heading Error)
+        # PPO: 20 Lidar + 2 Physics (Vel, Yaw) + 10 Radar + 6 History
+        self.obs_dim = self.lidar_rays + (3 if self.algo == 'ga' else 18)
         # Use -inf to inf to prevent crashes if a value goes slightly negative
         low = -np.inf * np.ones(self.obs_dim * self.n_stack)
         high = np.inf * np.ones(self.obs_dim * self.n_stack)
@@ -49,12 +51,17 @@ class F1TenthWrapper(gym.Wrapper):
         # Frame stack buffer
         self.frames = deque(maxlen=self.n_stack)
         
+        # Action history and Curriculum speed cap for PPO
+        self.action_history = deque([(0.0, 0.0)] * 3, maxlen=3)
+        self.current_speed_cap = 20.0
+        
         # Steering smoothing tracker
         self.prev_steering = 0.0
         
         # v5: Mechanical steering damper (EMA Filter)
         self.actual_steering = 0.0
         self.alpha = 0.3
+        self.steps_since_last_gate = 0
 
     def reset(self, **kwargs):
         # FIX: If SB3 calls reset() without a position, inject a default one.
@@ -71,12 +78,17 @@ class F1TenthWrapper(gym.Wrapper):
         self.actual_steering = 0.0
         self.current_waypoint_idx = 0
         self.prev_distance = None
+        self.action_history = deque([(0.0, 0.0)] * 3, maxlen=3)
+        self.steps_since_last_gate = 0
             
         return self._get_stacked_obs()
 
     def step(self, action):
         # Extract raw target steering from AI
         target_steering = action[0]
+        target_speed = action[1]
+        
+        self.action_history.append((target_steering, target_speed))
         
         # v5: Apply EMA Low-Pass Filter (Mechanical Damper)
         self.actual_steering = (self.alpha * target_steering) + ((1.0 - self.alpha) * self.actual_steering)
@@ -85,9 +97,9 @@ class F1TenthWrapper(gym.Wrapper):
         action[0] = self.actual_steering
         
         # 1. Reshape Action for F1TENTH
-        # Apply Speed Floor: Clip speed to [4.5, 20.0]
+        # Apply Speed Floor and Curriculum Cap
         steer = action[0]
-        speed = np.clip(action[1], 4.5, 20.0)
+        speed = np.clip(action[1], 4.5, getattr(self, 'current_speed_cap', 20.0))
         action_reshaped = np.array([[steer, speed]])
         
         # 2. Step the simulator
@@ -115,19 +127,27 @@ class F1TenthWrapper(gym.Wrapper):
         variance = 2.0
         speed_reward = np.exp(-((velocity - target_speed)**2) / (2 * variance**2))
         
-        # B. Survival Penalty & Jitter smoothing
-        if done:
-            reward = -10.0  # Big penalty for death (overrides other rewards)
-        else:
-            reward = (speed_reward * 2.0) - jitter_penalty
-            
         # 5. Waypoint Tracking & Distance Progress Reward
         agent_x = obs['poses_x'][0]
         agent_y = obs['poses_y'][0]
         agent_pos = np.array([agent_x, agent_y])
         
+        # B. Survival Penalty & Jitter smoothing
+        if done:
+            reward = -1000.0  # Severe anti-suicide penalty for death
+        else:
+            reward = (speed_reward * 2.0) - jitter_penalty
+            if self.algo == 'ppo':
+                reward -= 0.1  # Time Penalty for slow driving
+                if self.waypoints:
+                    target_cp = self.waypoints[self.current_waypoint_idx]
+                    cte = np.linalg.norm(agent_pos - target_cp)
+                    reward -= (cte * 0.1)  # Cross-Track Error Penalty
+        
         waypoint_cleared = False
         progress_reward = 0.0
+        distance_closed = 0.0
+        self.steps_since_last_gate += 1
         
         if self.waypoints:
             target_cp = self.waypoints[self.current_waypoint_idx]
@@ -137,12 +157,23 @@ class F1TenthWrapper(gym.Wrapper):
                 self.prev_distance = dist
                 
             distance_closed = self.prev_distance - dist
-            progress_reward = distance_closed * 10.0
+            # Anti-donut zeroing: agent must move forward above low-speed to extract points
+            if self.algo == 'ga':
+                if float(velocity) > 2.0:
+                    progress_reward = distance_closed * 100.0
+                else:
+                    progress_reward = 0.0
+            else:
+                progress_reward = distance_closed * 10.0
             
             if dist < self.checkpoint_radius:
                 self.current_waypoint_idx = (self.current_waypoint_idx + 1) % len(self.waypoints)
                 waypoint_cleared = True
                 progress_reward = 0.0  # Reset for this step so we don't penalize the jump
+                # Export the sector time
+                info['steps_taken'] = self.steps_since_last_gate
+                self.steps_since_last_gate = 0
+                
                 # Calculate distance to the NEW waypoint immediately
                 new_target = self.waypoints[self.current_waypoint_idx]
                 self.prev_distance = np.linalg.norm(agent_pos - new_target)
@@ -186,9 +217,33 @@ class F1TenthWrapper(gym.Wrapper):
             heading_arr = np.array([heading_error])
             final_obs = np.concatenate([downsampled_scans, velocity, yaw_rate, heading_arr])
         else:
-            final_obs = np.concatenate([downsampled_scans, velocity, yaw_rate])
+            car_x = obs['poses_x'][0]
+            car_y = obs['poses_y'][0]
+            car_yaw = obs['poses_theta'][0]
+            
+            radar_coords = []
+            if self.waypoints:
+                for i in range(5):
+                    idx = (self.current_waypoint_idx + i) % len(self.waypoints)
+                    wp_x, wp_y = self.waypoints[idx]
+                    dx = wp_x - car_x
+                    dy = wp_y - car_y
+                    # Transform to car local frame
+                    local_x = dx * math.cos(car_yaw) + dy * math.sin(car_yaw)
+                    local_y = -dx * math.sin(car_yaw) + dy * math.cos(car_yaw)
+                    radar_coords.extend([local_x, local_y])
+            else:
+                radar_coords = [0.0] * 10
+                
+            radar_arr = np.array(radar_coords)
+            hist_arr = np.array(self.action_history).flatten()
+            
+            final_obs = np.concatenate([downsampled_scans, velocity, yaw_rate, radar_arr, hist_arr])
             
         return final_obs.astype(np.float32)
+
+    def set_speed_cap(self, max_speed):
+        self.current_speed_cap = max_speed
 
     def _get_stacked_obs(self):
         assert len(self.frames) == self.n_stack

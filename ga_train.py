@@ -32,7 +32,7 @@ def evaluate_population(env, population, current_gen, total_gens):
     penalty_weight = 2.0 * (max(0, current_gen - 1) / max(1, total_gens - 1))
     
     # Stagnation limit: If 3000 timesteps pass without hitting the next checkpoint, kill the mutant.
-    STAGNATION_LIMIT = 3000
+    STAGNATION_LIMIT = 100  # Aggressively kill mutants that are too slow
     
     # Reset the VecEnv
     obs = env.reset()
@@ -73,12 +73,19 @@ def evaluate_population(env, population, current_gen, total_gens):
                 
                 # Waypoint Progression Check
                 waypoint_cleared = infos[i].get('waypoint_cleared', False)
-                waypoint_bonus = 50.0 if waypoint_cleared else 0.0
+                if waypoint_cleared:
+                    steps_taken = max(1, infos[i].get('steps_taken', 100))
+                    # Massive speed incentive based on sector time
+                    waypoint_bonus = 1000.0 / steps_taken
+                else:
+                    waypoint_bonus = 0.0
                 
                 fitness_scores[i] += (env_reward + progress_score + waypoint_bonus - steering_penalty)
                 
                 if dones[i]:
                     active_envs[i] = False
+                    # Apply severe anti-suicide penalty for premature death
+                    fitness_scores[i] -= 1000.0
                 
                 if waypoint_cleared:
                     time_since_last_cp[i] = 0

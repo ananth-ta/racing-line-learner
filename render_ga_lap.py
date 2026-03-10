@@ -249,78 +249,108 @@ def record_lap(model_path, output_path):
     
     print(f"Recording Cinematic Lap (Max {MAX_STEPS} steps)...")
     
-    for step in range(MAX_STEPS):
-        obs_tensor = torch.FloatTensor(wrapped_obs).unsqueeze(0)
-        with torch.no_grad():
-            action = model(obs_tensor).squeeze(0).numpy()
+    try:
+        for step in range(MAX_STEPS):
+            obs_tensor = torch.FloatTensor(wrapped_obs).unsqueeze(0)
+            with torch.no_grad():
+                action = model(obs_tensor).squeeze(0).numpy()
+                
+            try:
+                agent = raw_env.sim.agents[0]
+                raw_obs = {
+                    'poses_x': [agent.state[0]],
+                    'poses_y': [agent.state[1]],
+                    'poses_theta': [agent.state[2]],
+                    'linear_vels_x': [agent.state[3]],
+                    'linear_vels_y': [0.0],
+                    'ang_vels_z': [agent.state[4] if len(agent.state) > 4 else 0.0],
+                    'scans': [agent.scan if hasattr(agent, 'scan') else np.ones(1080) * 10],
+                }
+            except Exception as e:
+                current_obs = wrapped_obs[-23:]  
+                raw_obs = {
+                    'poses_x': [0.0],
+                    'poses_y': [0.0],
+                    'poses_theta': [0.0],
+                    'linear_vels_x': [current_obs[-3]],
+                    'linear_vels_y': [0.0],
+                    'ang_vels_z': [current_obs[-2]],
+                    'scans': [np.array(list(current_obs[:-3]) * 54)],
+                }
+                if step == 0:
+                    print(f"  Warning: Using fallback observation extraction: {e}")
             
-        try:
-            agent = raw_env.sim.agents[0]
-            raw_obs = {
-                'poses_x': [agent.state[0]],
-                'poses_y': [agent.state[1]],
-                'poses_theta': [agent.state[2]],
-                'linear_vels_x': [agent.state[3]],
-                'linear_vels_y': [0.0],
-                'ang_vels_z': [agent.state[4] if len(agent.state) > 4 else 0.0],
-                'scans': [agent.scan if hasattr(agent, 'scan') else np.ones(1080) * 10],
-            }
-        except Exception as e:
-            current_obs = wrapped_obs[-22:]  
-            raw_obs = {
-                'poses_x': [0.0],
-                'poses_y': [0.0],
-                'poses_theta': [0.0],
-                'linear_vels_x': [current_obs[-2]],
-                'linear_vels_y': [0.0],
-                'ang_vels_z': [current_obs[-1]],
-                'scans': [np.array(list(current_obs[:-2]) * 54)],
-            }
+            car_x = raw_obs['poses_x'][0]
+            car_y = raw_obs['poses_y'][0]
+            current_pos = np.array([car_x, car_y])
+            
             if step == 0:
-                print(f"  Warning: Using fallback observation extraction: {e}")
-        
-        car_x = raw_obs['poses_x'][0]
-        car_y = raw_obs['poses_y'][0]
-        current_pos = np.array([car_x, car_y])
-        
-        if step == 0:
-            start_pos = current_pos
-        else:
-            dist = np.linalg.norm(current_pos - start_pos)
-            if dist > 10.0:
-                left_start_zone = True
-            elif left_start_zone and dist < 2.0:
-                print(f"  Lap completed at step {step}!")
-                termination_reason = "Lap Completed"
+                start_pos = current_pos
+            else:
+                dist = np.linalg.norm(current_pos - start_pos)
+                if dist > 10.0:
+                    left_start_zone = True
+                elif left_start_zone and dist < 2.0:
+                    print(f"  Lap completed at step {step}!")
+                    termination_reason = "Lap Completed"
+                    break
+            
+            try:
+                # Get checkpoint info from filename if possible
+                chkpt_num = model_path.split('_gen_')[-1].split('.pt')[0] if '_gen_' in model_path else 'Final'
+                frame = renderer.render(raw_obs, action, step, total_reward, f"GA Mutant Gen {chkpt_num}")
+                
+                if writer is None:
+                    h, w = frame.shape[:2]
+                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    writer = cv2.VideoWriter(str(output_path), fourcc, FPS, (w, h))
+                
+                bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                writer.write(bgr_frame)
+            except Exception as e:
+                print(f"  Render error at step {step}: {e}")
                 break
+                
+            wrapped_obs, reward, done, info = wrapped_env.step(action)
+            
+            # ---------------------------------------------------------
+            # Reconstruct exactly the Genetic Algorithm's fitness math
+            # ---------------------------------------------------------
+            progress_score = info.get('progress_reward', 0.0)
+            
+            waypoint_cleared = info.get('waypoint_cleared', False)
+            if waypoint_cleared:
+                steps_taken = max(1, info.get('steps_taken', 100))
+                waypoint_bonus = 1000.0 / steps_taken
+            else:
+                waypoint_bonus = 0.0
+            
+            # Extract generation number from filename to apply exact curriculum penalty scale
+            try:
+                chkpt_str = model_path.split('_gen_')[-1].split('.pt')[0]
+                gen_num = int(chkpt_str)
+            except ValueError:
+                gen_num = 500  # Default to max penalty if gen parsing fails
+                
+            penalty_weight = 2.0 * (max(0, gen_num - 1) / max(1, 500 - 1))
+            steering = action[0]
+            steering_penalty = (abs(steering) ** 2) * penalty_weight
+            
+            step_fitness = reward + progress_score + waypoint_bonus - steering_penalty
+            total_reward += step_fitness
+            
+            if done:
+                print(f"  Episode ended at step {step} (collision)")
+                termination_reason = "Collision"
+                break
+                
+            if step % 200 == 0 and step > 0:
+                print(f"  Step {step}/{MAX_STEPS}, Reward: {total_reward:.1f}")
+                
+    except KeyboardInterrupt:
+        print(f"\n  [!] Render interrupted by user at step {step}. Saving partial video...")
+        termination_reason = "Interrupted"
         
-        try:
-            # Get checkpoint info from filename if possible
-            chkpt_num = model_path.split('_gen_')[-1].split('.pt')[0] if '_gen_' in model_path else 'Final'
-            frame = renderer.render(raw_obs, action, step, total_reward, f"GA Mutant Gen {chkpt_num}")
-            
-            if writer is None:
-                h, w = frame.shape[:2]
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                writer = cv2.VideoWriter(str(output_path), fourcc, FPS, (w, h))
-            
-            bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            writer.write(bgr_frame)
-        except Exception as e:
-            print(f"  Render error at step {step}: {e}")
-            break
-            
-        wrapped_obs, reward, done, info = wrapped_env.step(action)
-        total_reward += reward
-        
-        if done:
-            print(f"  Episode ended at step {step} (collision)")
-            termination_reason = "Collision"
-            break
-            
-        if step % 200 == 0 and step > 0:
-            print(f"  Step {step}/{MAX_STEPS}, Reward: {total_reward:.1f}")
-            
     print(f"  Finished recording: {step} steps, {(step) * 0.01:.2f}s, Reward: {total_reward:.1f}")
     wrapped_env.close()
     
@@ -348,7 +378,7 @@ def record_lap(model_path, output_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Render a full lap video of a trained GA mutant")
     parser.add_argument('--model', type=str, required=True, help='Path to trained model .pt checkpoint')
-    parser.add_argument('--output', type=str, required=True, help='Output filename for the video (.mp4)')
+    parser.add_argument('--output', type=str, required=True, help='Output filename for the video (use .mkv for crash-resistant streaming)')
     args = parser.parse_args()
     
     try:

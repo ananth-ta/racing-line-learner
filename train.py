@@ -4,7 +4,22 @@ import argparse
 import os
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
+
+class SpeedCurriculumCallback(BaseCallback):
+    def __init__(self, total_timesteps, verbose=0):
+        super(SpeedCurriculumCallback, self).__init__(verbose)
+        self.total_timesteps = total_timesteps
+        self.initial_max_speed = 5.0
+        self.final_max_speed = 20.0
+        self.curriculum_duration = 1000000
+
+    def _on_step(self):
+        progress = min(1.0, self.num_timesteps / self.curriculum_duration)
+        current_max = self.initial_max_speed + progress * (self.final_max_speed - self.initial_max_speed)
+        if hasattr(self.training_env, 'env_method'):
+            self.training_env.env_method('set_speed_cap', current_max)
+        return True
 from wrapper import F1TenthWrapper
 
 # --- Configuration ---
@@ -58,23 +73,28 @@ def main():
         tensorboard_log="./f1tenth_logs/", 
         learning_rate=0.0003,
         batch_size=64,
-        gamma=0.99
+        gamma=0.999  # Increased for long-term planning
     )
 
     # 4. Setup Callbacks
-    callback = None
+    callbacks = []
+    
+    speed_cb = SpeedCurriculumCallback(total_timesteps=args.timesteps)
+    callbacks.append(speed_cb)
+    
     if args.checkpoint_dir:
         print(f"Checkpointing enabled. Saving to: {args.checkpoint_dir}")
         os.makedirs(args.checkpoint_dir, exist_ok=True)
-        callback = CheckpointCallback(
+        checkpoint_cb = CheckpointCallback(
             save_freq=100000, 
             save_path=args.checkpoint_dir,
             name_prefix=args.model_name
         )
+        callbacks.append(checkpoint_cb)
 
     # 5. Train
     print(f"Starting training for {args.timesteps} steps...")
-    model.learn(total_timesteps=args.timesteps, callback=callback)
+    model.learn(total_timesteps=args.timesteps, callback=callbacks)
 
     # 6. Save the Final Model
     os.makedirs(args.save_dir, exist_ok=True)
