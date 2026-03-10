@@ -1,13 +1,15 @@
 import gym
 import numpy as np
+import math
 from gym import spaces
 from collections import deque
 
 class F1TenthWrapper(gym.Wrapper):
-    def __init__(self, env, n_stack=3):
+    def __init__(self, env, n_stack=3, algo='ga'):
         super().__init__(env)
         
         self.n_stack = n_stack
+        self.algo = algo
         
         # --- Waypoint System (Vegas Optimal Line) ---
         import csv
@@ -36,9 +38,9 @@ class F1TenthWrapper(gym.Wrapper):
             dtype=np.float32
         )
         
-        # --- Define Observation Space (20 Lidar + 2 Physics) * n_stack ---
+        # --- Define Observation Space (20 Lidar + 3 Physics: Vel, Yaw, Heading Error) * n_stack ---
         self.lidar_rays = 20
-        self.obs_dim = self.lidar_rays + 2
+        self.obs_dim = self.lidar_rays + (3 if self.algo == 'ga' else 2)
         # Use -inf to inf to prevent crashes if a value goes slightly negative
         low = -np.inf * np.ones(self.obs_dim * self.n_stack)
         high = np.inf * np.ones(self.obs_dim * self.n_stack)
@@ -166,8 +168,26 @@ class F1TenthWrapper(gym.Wrapper):
         velocity = np.array([obs['linear_vels_x'][0]])
         yaw_rate = np.array([obs['ang_vels_z'][0]])
         
-        # 4. Concatenate
-        final_obs = np.concatenate([downsampled_scans, velocity, yaw_rate])
+        if self.algo == 'ga':
+            # Calculate heading error compass to target waypoint
+            car_x = obs['poses_x'][0]
+            car_y = obs['poses_y'][0]
+            car_yaw = obs['poses_theta'][0]
+            
+            if self.waypoints:
+                target_x, target_y = self.waypoints[self.current_waypoint_idx]
+                target_angle = math.atan2(target_y - car_y, target_x - car_x)
+                heading_error = target_angle - car_yaw
+                # Normalize to [-pi, pi]
+                heading_error = (heading_error + math.pi) % (2 * math.pi) - math.pi
+            else:
+                heading_error = 0.0
+                
+            heading_arr = np.array([heading_error])
+            final_obs = np.concatenate([downsampled_scans, velocity, yaw_rate, heading_arr])
+        else:
+            final_obs = np.concatenate([downsampled_scans, velocity, yaw_rate])
+            
         return final_obs.astype(np.float32)
 
     def _get_stacked_obs(self):

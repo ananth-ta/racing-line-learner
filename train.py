@@ -47,7 +47,7 @@ def main():
     env = gym.make('f110_gym:f110-v0', map=MAP_NAME, map_ext='.png', num_agents=1)
     
     # 2. Apply our Wrapper
-    env = F1TenthWrapper(env)
+    env = F1TenthWrapper(env, algo='ppo')
     
     # 3. Initialize the Agent (PPO)
     print(f"Initializing PPO Agent ({args.model_name})...")

@@ -266,7 +266,7 @@ def create_env():
 def create_wrapped_env():
     """Create wrapped F1TENTH environment."""
     env = create_env()
-    return F1TenthWrapper(env)
+    return F1TenthWrapper(env, algo='ppo')
 
 
 def record_episode(policy_fn, agent_name="Agent", max_steps=MAX_STEPS):
@@ -284,7 +284,7 @@ def record_episode(policy_fn, agent_name="Agent", max_steps=MAX_STEPS):
     """
     # Create both wrapped (for policy) and unwrapped (for rendering) access
     raw_env = create_env()
-    wrapped_env = F1TenthWrapper(raw_env)
+    wrapped_env = F1TenthWrapper(raw_env, algo='ppo')
     
     renderer = HeadlessRenderer(map_path=MAP_NAME)
     renderer.reset()

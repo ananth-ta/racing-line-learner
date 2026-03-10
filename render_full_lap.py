@@ -179,7 +179,7 @@ def create_env():
 
 def record_lap(model_path, output_path):
     raw_env = create_env()
-    wrapped_env = F1TenthWrapper(raw_env)
+    wrapped_env = F1TenthWrapper(raw_env, algo='ppo')
     
     print(f"Loading model: {model_path}")
     model = PPO.load(model_path)

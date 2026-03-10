@@ -61,6 +61,7 @@ class HeadlessRenderer:
             self.origin = [0, 0, 0]
         
         self.trajectory = []
+        self.all_trajectory = []
         self.max_trajectory_points = 500
     
     def world_to_pixel(self, x, y):
@@ -70,6 +71,7 @@ class HeadlessRenderer:
     
     def reset(self):
         self.trajectory = []
+        self.all_trajectory = []
     
     def render(self, obs_dict, action, step, total_reward, agent_name="Agent"):
         fig, axes = plt.subplots(1, 2, figsize=self.figsize, dpi=100)
@@ -85,6 +87,7 @@ class HeadlessRenderer:
         px, py = self.world_to_pixel(car_x, car_y)
         
         self.trajectory.append((px, py))
+        self.all_trajectory.append((px, py))
         if len(self.trajectory) > self.max_trajectory_points:
             self.trajectory.pop(0)
         
@@ -170,6 +173,49 @@ class HeadlessRenderer:
         plt.close(fig)
         
         return img
+        
+    def save_path_image(self, output_path, agent_name="Agent", stats=None):
+        if not self.map_loaded:
+            print("Cannot save trajectory map because the map image was not loaded.")
+            return
+            
+        fig, axes = plt.subplots(1, 2, figsize=self.figsize, dpi=100)
+        
+        ax1 = axes[0]
+        ax1.imshow(self.map_img, cmap='gray', origin='upper')
+        
+        if len(self.all_trajectory) > 1:
+            traj = np.array(self.all_trajectory)
+            ax1.plot(traj[:, 0], traj[:, 1], 'r-', linewidth=2, alpha=0.8)
+            ax1.scatter(traj[0, 0], traj[0, 1], c='lime', s=100, label='Start', zorder=10)
+            ax1.scatter(traj[-1, 0], traj[-1, 1], c='red', s=100, label='End', zorder=10)
+            ax1.legend(loc='lower left', fontsize=16)
+            
+        ax1.set_aspect('equal')
+        ax1.set_title(f'{agent_name} - Final Trajectory', fontsize=24, pad=20)
+        ax1.axis('off')
+        
+        ax2 = axes[1]
+        ax2.set_xlim(0, 10)
+        ax2.set_ylim(0, 10)
+        ax2.axis('off')
+        
+        ax2.add_patch(Rectangle((0, 0), 10, 10, facecolor='#1a1a2e', edgecolor='none'))
+        ax2.text(5, 9.2, agent_name, fontsize=32, ha='center', color='cyan', fontweight='bold')
+        ax2.text(5, 8.5, 'Run Summary', fontsize=24, ha='center', color='white', fontweight='bold')
+        ax2.plot([1, 9], [8.0, 8.0], 'gray', linewidth=2)
+        
+        if stats:
+            y_pos = 7.0
+            for label, value, color in stats:
+                if label:
+                    ax2.text(1, y_pos, f'{label}:', fontsize=20, color='gray', ha='left')
+                    ax2.text(9, y_pos, value, fontsize=20, color=color, ha='right', fontweight='bold')
+                y_pos -= 0.6
+        
+        plt.tight_layout()
+        fig.savefig(output_path, bbox_inches='tight')
+        plt.close(fig)
 
 # ============================================================================
 # LAP RECORDING LOGIC
@@ -199,6 +245,7 @@ def record_lap(model_path, output_path):
     total_reward = 0.0
     start_pos = None
     left_start_zone = False
+    termination_reason = "Time Limit"
     
     print(f"Recording Cinematic Lap (Max {MAX_STEPS} steps)...")
     
@@ -244,6 +291,7 @@ def record_lap(model_path, output_path):
                 left_start_zone = True
             elif left_start_zone and dist < 2.0:
                 print(f"  Lap completed at step {step}!")
+                termination_reason = "Lap Completed"
                 break
         
         try:
@@ -267,6 +315,7 @@ def record_lap(model_path, output_path):
         
         if done:
             print(f"  Episode ended at step {step} (collision)")
+            termination_reason = "Collision"
             break
             
         if step % 200 == 0 and step > 0:
@@ -278,6 +327,23 @@ def record_lap(model_path, output_path):
     if writer is not None:
         writer.release()
         print(f"Saved video: {output_path} ({step} frames, {step/FPS:.1f}s)")
+        
+        # Save the map trace
+        image_output_path = str(Path(output_path).with_suffix('.png'))
+        chkpt_num = model_path.split('_gen_')[-1].split('.pt')[0] if '_gen_' in model_path else 'Final'
+        
+        status_color = 'lime' if termination_reason == "Lap Completed" else ('red' if termination_reason == "Collision" else 'orange')
+        
+        stats = [
+            ('Result', termination_reason, status_color),
+            ('', '', 'white'),
+            ('Total Steps', f'{step}', 'white'),
+            ('Final Time', f'{step * 0.01:.2f}s', 'white'),
+            ('Final Reward', f'{total_reward:.1f}', 'lime' if total_reward > 0 else 'red'),
+        ]
+        
+        renderer.save_path_image(image_output_path, f"GA Mutant Gen {chkpt_num}", stats=stats)
+        print(f"Saved trajectory map: {image_output_path}")
         
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Render a full lap video of a trained GA mutant")
