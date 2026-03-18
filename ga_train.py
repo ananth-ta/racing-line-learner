@@ -73,7 +73,7 @@ def evaluate_population(env, population, current_gen, total_gens):
                 
                 # Waypoint Progression Check
                 waypoint_cleared = infos[i].get('waypoint_cleared', False)
-                waypoint_bonus = 50.0 if waypoint_cleared else 0.0
+                waypoint_bonus = 500.0 if waypoint_cleared else 0.0
                 
                 fitness_scores[i] += (env_reward + progress_score + waypoint_bonus - steering_penalty)
                 

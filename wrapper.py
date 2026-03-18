@@ -25,7 +25,7 @@ class F1TenthWrapper(gym.Wrapper):
             print(f"Error loading Vegas optimal line: {e}")
             self.waypoints = [np.array([0.0, 0.0])]
             
-        self.checkpoint_radius = 1.5  # Meters (Capture radius for waypoints)
+        self.checkpoint_radius = 3.5  # Meters (Capture radius for waypoints)
         self.current_waypoint_idx = 0
         
         # --- FIX 1: Manually define the Action Space ---
@@ -128,6 +128,7 @@ class F1TenthWrapper(gym.Wrapper):
         
         waypoint_cleared = False
         progress_reward = 0.0
+        distance_closed = 0.0
         
         if self.waypoints:
             target_cp = self.waypoints[self.current_waypoint_idx]
@@ -137,7 +138,7 @@ class F1TenthWrapper(gym.Wrapper):
                 self.prev_distance = dist
                 
             distance_closed = self.prev_distance - dist
-            progress_reward = distance_closed * 10.0
+            progress_reward = distance_closed * 100.0
             
             if dist < self.checkpoint_radius:
                 self.current_waypoint_idx = (self.current_waypoint_idx + 1) % len(self.waypoints)
