@@ -63,20 +63,24 @@ def evaluate_population(env, population, current_gen, total_gens):
                 
                 # Extract continuous distance-closed reward from environment info to combat U-turn farming
                 progress_score = infos[i].get('progress_reward', 0.0)
-                
+                steering_delta = infos[i].get('steering_delta', 0.0) # <-- Extract Delta   
+
                 # Base wrapper reward (contains Gaussian speed incentive, jitter penalty, collision penalty)
                 env_reward = rewards[i]
                 
                 # Heavy quadratic penalty for sharp turning to stop donuts. 
                 # Curriculum learning scales this penalty dynamically.
                 steering_penalty = (abs(steering) ** 2) * penalty_weight 
+
+                # THE SMOOTHNESS TAX: Massive penalty for jittering the wheel
+                jitter_tax = steering_delta * 50.0
                 
                 # Waypoint Progression Check
                 waypoint_cleared = infos[i].get('waypoint_cleared', False)
                 waypoint_bonus = 500.0 if waypoint_cleared else 0.0
                 
-                fitness_scores[i] += (env_reward + progress_score + waypoint_bonus - steering_penalty)
-                
+                fitness_scores[i] += (env_reward + progress_score + waypoint_bonus - steering_penalty - jitter_tax)
+                                
                 if dones[i]:
                     active_envs[i] = False
                 
@@ -123,8 +127,8 @@ def evolve_population(population, fitness_scores):
         child_weights = np.where(mask, weights_A, weights_B)
         
         # Gaussian Mutation
-        mutation_mask = np.random.rand(len(child_weights)) < 0.10
-        mutations = np.random.normal(0, 0.1, size=len(child_weights))
+        mutation_mask = np.random.rand(len(child_weights)) < 0.25
+        mutations = np.random.normal(0, 0.2, size=len(child_weights))
         child_weights = np.where(mutation_mask, child_weights + mutations, child_weights)
         
         # Load the new arrays back into the PyTorch models

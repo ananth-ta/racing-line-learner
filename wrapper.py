@@ -40,8 +40,7 @@ class F1TenthWrapper(gym.Wrapper):
         
         # --- Define Observation Space (20 Lidar + 3 Physics: Vel, Yaw, Heading Error) * n_stack ---
         self.lidar_rays = 20
-        self.obs_dim = self.lidar_rays + (3 if self.algo == 'ga' else 2)
-        # Use -inf to inf to prevent crashes if a value goes slightly negative
+        self.obs_dim = self.lidar_rays + (4 if self.algo == 'ga' else 2) # Changed 3 to 4        # Use -inf to inf to prevent crashes if a value goes slightly negative
         low = -np.inf * np.ones(self.obs_dim * self.n_stack)
         high = np.inf * np.ones(self.obs_dim * self.n_stack)
         self.observation_space = spaces.Box(low, high, dtype=np.float32)
@@ -96,15 +95,13 @@ class F1TenthWrapper(gym.Wrapper):
         # 3. Process observation and update stack
         current_processed = self.process_obs(obs)
         self.frames.append(current_processed)
-        stacked_obs = self._get_stacked_obs()
-        
+        stacked_obs = self._get_stacked_obs()        
         # 4. CUSTOM REWARD CALCULATION
-        # Extract physics from the observation
-        # (Recall: We put velocity at index -2 in process_obs)
-        velocity = current_processed[-2]
+        # FIX: Velocity is now at index -4 !
+        # [-1]=prev_steer, [-2]=heading, [-3]=yaw, [-4]=velocity
+        velocity = current_processed[-4]
         
         # Calculate steering jitter penalty
-        # Note: We penalize the RAW target output, not the damped physical steering
         current_steering = target_steering
         steering_diff = abs(current_steering - self.prev_steering)
         self.prev_steering = current_steering
@@ -114,7 +111,7 @@ class F1TenthWrapper(gym.Wrapper):
         target_speed = 7.0
         variance = 2.0
         speed_reward = np.exp(-((velocity - target_speed)**2) / (2 * variance**2))
-        
+
         # B. Survival Penalty & Jitter smoothing
         if done:
             reward = -10.0  # Big penalty for death (overrides other rewards)
@@ -154,7 +151,8 @@ class F1TenthWrapper(gym.Wrapper):
         info['waypoint_cleared'] = waypoint_cleared
         info['current_waypoint_idx'] = self.current_waypoint_idx
         info['progress_reward'] = progress_reward
-        
+        info['steering_delta'] = steering_diff # <-- Added this line   
+             
         return stacked_obs, reward, done, info
 
     def process_obs(self, obs):
@@ -170,13 +168,15 @@ class F1TenthWrapper(gym.Wrapper):
         yaw_rate = np.array([obs['ang_vels_z'][0]])
         
         if self.algo == 'ga':
-            # Calculate heading error compass to target waypoint
+            # Calculate heading error compass to target waypoint (WITH +3 LOOK AHEAD)
             car_x = obs['poses_x'][0]
             car_y = obs['poses_y'][0]
             car_yaw = obs['poses_theta'][0]
             
             if self.waypoints:
-                target_x, target_y = self.waypoints[self.current_waypoint_idx]
+                # Look 3 waypoints ahead to smooth the trajectory
+                target_idx = (self.current_waypoint_idx + 3) % len(self.waypoints)
+                target_x, target_y = self.waypoints[target_idx]
                 target_angle = math.atan2(target_y - car_y, target_x - car_x)
                 heading_error = target_angle - car_yaw
                 # Normalize to [-pi, pi]
@@ -185,7 +185,10 @@ class F1TenthWrapper(gym.Wrapper):
                 heading_error = 0.0
                 
             heading_arr = np.array([heading_error])
-            final_obs = np.concatenate([downsampled_scans, velocity, yaw_rate, heading_arr])
+            prev_steer_arr = np.array([self.prev_steering])
+            
+            # Array structure: [Scans(20), Vel(1), Yaw(1), Heading(1), PrevSteer(1)] = 24 Total
+            final_obs = np.concatenate([downsampled_scans, velocity, yaw_rate, heading_arr, prev_steer_arr])
         else:
             final_obs = np.concatenate([downsampled_scans, velocity, yaw_rate])
             

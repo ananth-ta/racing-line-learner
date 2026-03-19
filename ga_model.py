@@ -5,9 +5,9 @@ import numpy as np
 class MutantMLP(nn.Module):
     def __init__(self):
         super(MutantMLP, self).__init__()
-        # Architecture: Input 69 (20 lidar + 3 physics * 3 frames), 64 ReLU, 64 ReLU, 2 Tanh
+        # Architecture: Input 72 (20 lidar + 4 physics * 3 frames), 64 ReLU, 64 ReLU, 2 Tanh
         self.net = nn.Sequential(
-            nn.Linear(69, 64),
+            nn.Linear(72, 64),
             nn.ReLU(),
             nn.Linear(64, 64),
             nn.ReLU(),

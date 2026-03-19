@@ -249,6 +249,14 @@ def record_lap(model_path, output_path):
     
     print(f"Recording Cinematic Lap (Max {MAX_STEPS} steps)...")
     
+    # Calculate penalty weight based on generation number to match ga_train.py 
+    try:
+        chkpt_str = model_path.split('_gen_')[-1].split('.pt')[0] if '_gen_' in model_path else '500'
+        current_gen = int(chkpt_str)
+    except ValueError:
+        current_gen = 500
+    penalty_weight = 2.0 * (max(0, current_gen - 1) / max(1, 499))
+    
     for step in range(MAX_STEPS):
         obs_tensor = torch.FloatTensor(wrapped_obs).unsqueeze(0)
         with torch.no_grad():
@@ -311,7 +319,15 @@ def record_lap(model_path, output_path):
             break
             
         wrapped_obs, reward, done, info = wrapped_env.step(action)
-        total_reward += reward
+        
+        # Calculate full GA Fitness logic to match ga_train.py
+        progress_score = info.get('progress_reward', 0.0)
+        waypoint_bonus = 500.0 if info.get('waypoint_cleared', False) else 0.0
+        steering_penalty = (abs(action[0]) ** 2) * penalty_weight
+        jitter_tax = info.get('steering_delta', 0.0) * 50.0
+        
+        step_fitness = reward + progress_score + waypoint_bonus - steering_penalty - jitter_tax
+        total_reward += step_fitness
         
         if done:
             print(f"  Episode ended at step {step} (collision)")
