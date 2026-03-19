@@ -118,7 +118,7 @@ class F1TenthWrapper(gym.Wrapper):
         else:
             reward = (speed_reward * 2.0) - jitter_penalty
             
-        # 5. Waypoint Tracking & Distance Progress Reward
+       # 5. Waypoint Tracking & Distance Progress Reward
         agent_x = obs['poses_x'][0]
         agent_y = obs['poses_y'][0]
         agent_pos = np.array([agent_x, agent_y])
@@ -137,11 +137,19 @@ class F1TenthWrapper(gym.Wrapper):
             distance_closed = self.prev_distance - dist
             progress_reward = distance_closed * 100.0
             
-            if dist < self.checkpoint_radius:
-                self.current_waypoint_idx = (self.current_waypoint_idx + 1) % len(self.waypoints)
+            # --- THE NEW SELF-HEALING BLOCK STARTS HERE ---
+            # Calculate distance to the NEXT waypoint to see if we bypassed the current one
+            next_idx = (self.current_waypoint_idx + 1) % len(self.waypoints)
+            next_target = self.waypoints[next_idx]
+            dist_to_next = np.linalg.norm(agent_pos - next_target)
+            
+            # Widen radius to 4.5m OR trigger if we accidentally got closer to the next waypoint
+            if dist < 4.5 or dist_to_next < dist:
+                self.current_waypoint_idx = next_idx
                 waypoint_cleared = True
                 progress_reward = 0.0  # Reset for this step so we don't penalize the jump
-                # Calculate distance to the NEW waypoint immediately
+                
+                # Calculate prev_distance to the NEW waypoint immediately
                 new_target = self.waypoints[self.current_waypoint_idx]
                 self.prev_distance = np.linalg.norm(agent_pos - new_target)
             else:

@@ -73,7 +73,7 @@ def evaluate_population(env, population, current_gen, total_gens):
                 steering_penalty = (abs(steering) ** 2) * penalty_weight 
 
                 # THE SMOOTHNESS TAX: Massive penalty for jittering the wheel
-                jitter_tax = steering_delta * 50.0
+                jitter_tax = steering_delta * 5.0
                 
                 # Waypoint Progression Check
                 waypoint_cleared = infos[i].get('waypoint_cleared', False)
