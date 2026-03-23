@@ -74,8 +74,8 @@ class F1TenthWrapper(gym.Wrapper):
         return self._get_stacked_obs()
 
     def step(self, action):
-        # Extract raw target steering from AI
-        target_steering = action[0]
+        # Extract raw target steering from AI and scale to [-3.14, 3.14]
+        target_steering = action[0] * 3.14
         
         # v5: Apply EMA Low-Pass Filter (Mechanical Damper)
         self.actual_steering = (self.alpha * target_steering) + ((1.0 - self.alpha) * self.actual_steering)
@@ -84,9 +84,9 @@ class F1TenthWrapper(gym.Wrapper):
         action[0] = self.actual_steering
         
         # 1. Reshape Action for F1TENTH
-        # Apply Speed Floor: Clip speed to [4.5, 20.0]
+        # Map speed from Tanh [-1, 1] up to physical speeds [4.5, 20.0]
         steer = action[0]
-        speed = np.clip(action[1], 4.5, 20.0)
+        speed = 4.5 + ((action[1] + 1.0) / 2.0) * (20.0 - 4.5)
         action_reshaped = np.array([[steer, speed]])
         
         # 2. Step the simulator
@@ -101,16 +101,19 @@ class F1TenthWrapper(gym.Wrapper):
         # [-1]=prev_steer, [-2]=heading, [-3]=yaw, [-4]=velocity
         velocity = current_processed[-4]
         
-        # Calculate steering jitter penalty
+        # Calculate steering jitter penalty dynamically based on speed
         current_steering = target_steering
         steering_diff = abs(current_steering - self.prev_steering)
         self.prev_steering = current_steering
-        jitter_penalty = steering_diff * 0.05
         
-        # A. Gaussian Speed Reward
-        target_speed = 7.0
-        variance = 2.0
-        speed_reward = np.exp(-((velocity - target_speed)**2) / (2 * variance**2))
+        # Jitter penalty dynamically scales: more penalty on high speed straights
+        # Clamped between 1.0 (corners) and 20.0 (max speed straights)
+        speed_factor = np.clip(velocity, 2.0, 20.0) / 5.0 
+        jitter_penalty = steering_diff * 10.0 * speed_factor
+        
+        # A. Linear Speed Reward
+        # Max velocity is 20.0 m/s, yielding up to +2.0 base survival points per frame.
+        speed_reward = np.clip(velocity / 10.0, 0.0, 2.0)
 
         # B. Survival Penalty & Jitter smoothing
         if done:
@@ -182,8 +185,11 @@ class F1TenthWrapper(gym.Wrapper):
             car_yaw = obs['poses_theta'][0]
             
             if self.waypoints:
-                # Look 3 waypoints ahead to smooth the trajectory
-                target_idx = (self.current_waypoint_idx + 3) % len(self.waypoints)
+                # Dynamic lookahead based on speed: look further ahead on fast straights
+                speed = velocity if velocity > 0 else 1.0
+                lookahead = int(np.clip(speed / 3.0, 1, 5))
+                
+                target_idx = (self.current_waypoint_idx + lookahead) % len(self.waypoints)
                 target_x, target_y = self.waypoints[target_idx]
                 target_angle = math.atan2(target_y - car_y, target_x - car_x)
                 heading_error = target_angle - car_yaw

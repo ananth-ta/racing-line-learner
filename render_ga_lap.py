@@ -73,7 +73,7 @@ class HeadlessRenderer:
         self.trajectory = []
         self.all_trajectory = []
     
-    def render(self, obs_dict, action, step, total_reward, agent_name="Agent"):
+    def render(self, obs_dict, action, step, total_reward, agent_name="Agent", fitness_breakdown=None):
         fig, axes = plt.subplots(1, 2, figsize=self.figsize, dpi=100)
         
         ax1 = axes[0]
@@ -137,6 +137,17 @@ class HeadlessRenderer:
             ('Step', f'{step}', 'white'),
             ('Time', f'{step * 0.01:.2f}s', 'white'),
             ('Reward', f'{total_reward:.1f}', 'lime' if total_reward > 0 else 'red'),
+        ]
+        
+        if fitness_breakdown:
+            telemetry.extend([
+                ('Prog Score', f"+{fitness_breakdown.get('progress_score', 0.0):.1f}", 'lime'),
+                ('Wypt Bonus', f"+{fitness_breakdown.get('waypoint_bonus', 0.0):.1f}", 'lime'),
+                ('Dir Pnlty', f"-{fitness_breakdown.get('steering_penalty', 0.0):.1f}", 'red'),
+                ('Jitter Tax', f"-{fitness_breakdown.get('jitter_tax', 0.0):.1f}", 'red'),
+            ])
+
+        telemetry.extend([
             ('', '', 'white'),
             ('Velocity', f'{velocity:.2f} m/s', 'cyan'),
             ('Speed Cmd', f'{speed_cmd:.2f} m/s', 'yellow'),
@@ -144,7 +155,7 @@ class HeadlessRenderer:
             ('', '', 'white'),
             ('Position', f'({car_x:.1f}, {car_y:.1f})', 'white'),
             ('Heading', f'{np.degrees(car_theta):.1f}°', 'white'),
-        ]
+        ])
         
         y_pos = 8.0
         for label, value, color in telemetry:
@@ -243,6 +254,7 @@ def record_lap(model_path, output_path):
     wrapped_obs = wrapped_env.reset()
     
     total_reward = 0.0
+    fitness_breakdown = {}
     start_pos = None
     left_start_zone = False
     termination_reason = "Time Limit"
@@ -274,15 +286,15 @@ def record_lap(model_path, output_path):
                 'scans': [agent.scan if hasattr(agent, 'scan') else np.ones(1080) * 10],
             }
         except Exception as e:
-            current_obs = wrapped_obs[-22:]  
+            current_obs = wrapped_obs[-24:]  
             raw_obs = {
                 'poses_x': [0.0],
                 'poses_y': [0.0],
                 'poses_theta': [0.0],
-                'linear_vels_x': [current_obs[-2]],
+                'linear_vels_x': [current_obs[-4]],
                 'linear_vels_y': [0.0],
-                'ang_vels_z': [current_obs[-1]],
-                'scans': [np.array(list(current_obs[:-2]) * 54)],
+                'ang_vels_z': [current_obs[-3]],
+                'scans': [np.array(list(current_obs[:-4]) * 54)],
             }
             if step == 0:
                 print(f"  Warning: Using fallback observation extraction: {e}")
@@ -305,7 +317,7 @@ def record_lap(model_path, output_path):
         try:
             # Get checkpoint info from filename if possible
             chkpt_num = model_path.split('_gen_')[-1].split('.pt')[0] if '_gen_' in model_path else 'Final'
-            frame = renderer.render(raw_obs, action, step, total_reward, f"GA Mutant Gen {chkpt_num}")
+            frame = renderer.render(raw_obs, action, step, total_reward, f"GA Mutant Gen {chkpt_num}", fitness_breakdown)
             
             if writer is None:
                 h, w = frame.shape[:2]
@@ -325,6 +337,13 @@ def record_lap(model_path, output_path):
         waypoint_bonus = 500.0 if info.get('waypoint_cleared', False) else 0.0
         steering_penalty = (abs(action[0]) ** 2) * penalty_weight
         jitter_tax = info.get('steering_delta', 0.0) * 50.0
+        
+        fitness_breakdown = {
+            'progress_score': progress_score,
+            'waypoint_bonus': waypoint_bonus,
+            'steering_penalty': steering_penalty,
+            'jitter_tax': jitter_tax
+        }
         
         step_fitness = reward + progress_score + waypoint_bonus - steering_penalty - jitter_tax
         total_reward += step_fitness
