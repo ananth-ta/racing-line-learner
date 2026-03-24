@@ -102,8 +102,13 @@ def evaluate_population(env, population, current_gen, total_gens):
 
     return fitness_scores
     
-def evolve_population(population, fitness_scores):
+def evolve_population(population, fitness_scores, stagnation_counter=0):
     num_envs = len(population)
+    
+    # Adaptive Mutation: Scale wildness directly off active stagnation!
+    # If the exact same score repeats for 15+ generations, crank to 50% probability and 0.5 variance.
+    mut_prob = min(0.50, 0.10 + (stagnation_counter / 15.0) * 0.40)
+    mut_var = min(0.50, 0.10 + (stagnation_counter / 15.0) * 0.40)
     
     # Elitism: Sort population by fitness
     sorted_indices = np.argsort(fitness_scores)[::-1]
@@ -131,10 +136,9 @@ def evolve_population(population, fitness_scores):
         mask = np.random.rand(len(weights_A)) > 0.5
         child_weights = np.where(mask, weights_A, weights_B)
         
-        # Gaussian Mutation
-        # Bumping mutation rate to 35% probability and 0.3 variance for faster exploration
-        mutation_mask = np.random.rand(len(child_weights)) < 0.35
-        mutations = np.random.normal(0, 0.3, size=len(child_weights))
+        # Gaussian Mutation (Adaptive based on Simulated Annealing)
+        mutation_mask = np.random.rand(len(child_weights)) < mut_prob
+        mutations = np.random.normal(0, mut_var, size=len(child_weights))
         child_weights = np.where(mutation_mask, child_weights + mutations, child_weights)
         
         # Load the new arrays back into the PyTorch models
@@ -175,6 +179,9 @@ if __name__ == '__main__':
         print(f"Initialized fresh Genetic Algorithm loop with {num_envs} Parallel Environments and {len(population)} initial mutants.")
     # -------------------------
     
+    best_fitness_ever = -np.inf
+    stagnation_counter = 0
+
     for gen in range(start_gen, num_generations + 1):
         # Evaluate the current population
         fitness_scores = evaluate_population(env, population, gen, num_generations)
@@ -183,7 +190,15 @@ if __name__ == '__main__':
         max_fitness = np.max(fitness_scores)
         mean_fitness = np.mean(fitness_scores)
         min_fitness = np.min(fitness_scores)
-        print(f"Generation {gen}/{num_generations} - Max Fitness: {max_fitness:.1f} | Mean Fitness: {mean_fitness:.1f} | Min Fitness: {min_fitness:.1f}")
+        
+        # Stagnation Tracking
+        if max_fitness > best_fitness_ever + 0.1:
+            best_fitness_ever = max_fitness
+            stagnation_counter = 0
+        else:
+            stagnation_counter += 1
+            
+        print(f"Generation {gen}/{num_generations} - Max Fitness: {max_fitness:.1f} | Mean: {mean_fitness:.1f} | Min: {min_fitness:.1f} | Stag: {stagnation_counter}")
         
         # Checkpointing
         if gen % 10 == 0:
@@ -194,6 +209,6 @@ if __name__ == '__main__':
             print(f"🔥 Checkpoint saved: {checkpoint_path}")
             
         # Evolve population for the next generation
-        population = evolve_population(population, fitness_scores)
+        population = evolve_population(population, fitness_scores, stagnation_counter)
 
     env.close()
