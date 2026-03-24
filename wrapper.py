@@ -13,6 +13,7 @@ class F1TenthWrapper(gym.Wrapper):
         
         # --- Waypoint System (Vegas Optimal Line) ---
         import csv
+        import math
         self.waypoints = []
         try:
             with open('maps/vegas_optimal_line.csv', 'r') as f:
@@ -21,9 +22,18 @@ class F1TenthWrapper(gym.Wrapper):
                 for row in reader:
                     if row:
                         self.waypoints.append(np.array([float(row[0]), float(row[1])]))
+                        
+            if len(self.waypoints) > 1:
+                self.start_x = self.waypoints[0][0]
+                self.start_y = self.waypoints[0][1]
+                self.start_theta = math.atan2(self.waypoints[1][1] - self.start_y, self.waypoints[1][0] - self.start_x)
+            else:
+                self.start_x, self.start_y, self.start_theta = 0.0, 0.0, 0.0
+                
         except Exception as e:
             print(f"Error loading Vegas optimal line: {e}")
             self.waypoints = [np.array([0.0, 0.0])]
+            self.start_x, self.start_y, self.start_theta = 0.0, 0.0, 0.0
             
         self.checkpoint_radius = 3.5  # Meters (Capture radius for waypoints)
         self.current_waypoint_idx = 0
@@ -58,7 +68,7 @@ class F1TenthWrapper(gym.Wrapper):
     def reset(self, **kwargs):
         # FIX: If SB3 calls reset() without a position, inject a default one.
         if 'poses' not in kwargs:
-            kwargs['poses'] = np.array([[0.0, 0.0, 0.0]])
+            kwargs['poses'] = np.array([[self.start_x, self.start_y, self.start_theta]])
         # Handle the F1TENTH tuple return
         obs, reward, done, info = self.env.reset(**kwargs)
         

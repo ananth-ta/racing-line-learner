@@ -40,6 +40,9 @@ def annotate_map():
         
         # Draw a solid red dot for the specific waypoint
         cv2.circle(img, (px, py), radius=3, color=(0, 0, 255), thickness=-1)
+        
+        # Label the waypoint index (1 to 150) in black text so it's visible on the white track
+        cv2.putText(img, str(index + 1), (px + 5, py - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
 
     print("Drawing continuous racing line...")
     # Draw a green line connecting the waypoints to visualize the exact path
@@ -49,6 +52,17 @@ def annotate_map():
     # Connect the final point back to the starting point to close the track loop
     if len(points) > 1:
         cv2.line(img, points[-1], points[0], color=(0, 255, 0), thickness=2)
+
+    print("Plotting Agent Spawn Point...")
+    # Agent spawns at exactly [0.0, 0.0] with 0.0 heading
+    agent_px = int((0.0 - ORIGIN_X) / RESOLUTION)
+    agent_py = int(height - ((0.0 - ORIGIN_Y) / RESOLUTION))
+    
+    cv2.circle(img, (agent_px, agent_py), radius=8, color=(255, 0, 0), thickness=-1)
+    cv2.putText(img, "SPAWN", (agent_px - 20, agent_py - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
+    
+    # 0.0 heading is straight down the +X axis (pixel X increases to the right)
+    cv2.arrowedLine(img, (agent_px, agent_py), (agent_px + 50, agent_py), (255, 0, 0), 4, tipLength=0.3)
 
     # Save the annotated image
     output_filename = 'maps/vegas_annotated.png'
