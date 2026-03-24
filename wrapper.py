@@ -110,16 +110,21 @@ class F1TenthWrapper(gym.Wrapper):
         # Clamped between 1.0 (corners) and 20.0 (max speed straights)
         speed_factor = np.clip(velocity, 2.0, 20.0) / 5.0 
         jitter_penalty = steering_diff * 10.0 * speed_factor
-        
         # A. Linear Speed Reward
         # Max velocity is 20.0 m/s, yielding up to +2.0 base survival points per frame.
         speed_reward = np.clip(velocity / 10.0, 0.0, 2.0)
+
+        # C. Wrong Way Penalty
+        # If the agent is facing more than 90 degrees away from the target waypoint, heavily penalize it.
+        # This absolutely murders ping-pong exploits and U-turns.
+        heading_error = current_processed[-2]
+        wrong_way_penalty = 10.0 if abs(heading_error) > (math.pi / 2.0) else 0.0
 
         # B. Survival Penalty & Jitter smoothing
         if done:
             reward = -10.0  # Big penalty for death (overrides other rewards)
         else:
-            reward = (speed_reward * 2.0) - jitter_penalty
+            reward = speed_reward - jitter_penalty - wrong_way_penalty
             
        # 5. Waypoint Tracking & Distance Progress Reward
         agent_x = obs['poses_x'][0]

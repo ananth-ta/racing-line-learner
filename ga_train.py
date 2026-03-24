@@ -137,7 +137,7 @@ def evolve_population(population, fitness_scores):
     return new_population
 
 if __name__ == '__main__':
-    num_envs = 75
+    num_envs = 50
     
     # Initialize a SubprocVecEnv with a population size of 50
     env = SubprocVecEnv([make_env(i) for i in range(num_envs)])
