@@ -49,7 +49,7 @@ class F1TenthWrapper(gym.Wrapper):
         )
         
         # --- Define Observation Space (20 Lidar + 3 Physics: Vel, Yaw, Heading Error) * n_stack ---
-        self.lidar_rays = 20
+        self.lidar_rays = 60
         self.obs_dim = self.lidar_rays + (4 if self.algo == 'ga' else 2) # Changed 3 to 4        # Use -inf to inf to prevent crashes if a value goes slightly negative
         low = -np.inf * np.ones(self.obs_dim * self.n_stack)
         high = np.inf * np.ones(self.obs_dim * self.n_stack)

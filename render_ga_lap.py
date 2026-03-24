@@ -267,7 +267,9 @@ def record_lap(model_path, output_path):
         current_gen = int(chkpt_str)
     except ValueError:
         current_gen = 500
-    penalty_weight = 2.0 * (max(0, current_gen - 1) / max(1, 499))
+    cycle_length = 100
+    cycle_pos = current_gen % cycle_length
+    penalty_weight = 2.0 * (max(0, cycle_pos - 1) / max(1, cycle_length - 1))
     
     for step in range(MAX_STEPS):
         obs_tensor = torch.FloatTensor(wrapped_obs).unsqueeze(0)
@@ -286,7 +288,7 @@ def record_lap(model_path, output_path):
                 'scans': [agent.scan if hasattr(agent, 'scan') else np.ones(1080) * 10],
             }
         except Exception as e:
-            current_obs = wrapped_obs[-24:]  
+            current_obs = wrapped_obs[-64:]  
             raw_obs = {
                 'poses_x': [0.0],
                 'poses_y': [0.0],
@@ -294,7 +296,7 @@ def record_lap(model_path, output_path):
                 'linear_vels_x': [current_obs[-4]],
                 'linear_vels_y': [0.0],
                 'ang_vels_z': [current_obs[-3]],
-                'scans': [np.array(list(current_obs[:-4]) * 54)],
+                'scans': [np.array(list(current_obs[:-4]) * 18)],
             }
             if step == 0:
                 print(f"  Warning: Using fallback observation extraction: {e}")

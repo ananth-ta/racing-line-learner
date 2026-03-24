@@ -29,7 +29,12 @@ def evaluate_population(env, population, current_gen, total_gens):
     time_since_last_cp = np.zeros(num_envs)
     
     # Curriculum Learning: Scale steering penalty from 0.0 to 2.0 linearly
-    penalty_weight = 2.0 * (max(0, current_gen - 1) / max(1, total_gens - 1))
+    # Simulated Annealing / Cyclic Penalty Curriculum
+    # The penalty drops back to near 0 every 100 generations to allow aggressive exploration
+    # to burst through plateaus at very sharp corners.
+    cycle_length = 100
+    cycle_pos = current_gen % cycle_length
+    penalty_weight = 2.0 * (max(0, cycle_pos - 1) / max(1, cycle_length - 1))
     
     # Stagnation limit: If 3000 timesteps pass without hitting the next checkpoint, kill the mutant.
     STAGNATION_LIMIT = 3000
@@ -127,8 +132,9 @@ def evolve_population(population, fitness_scores):
         child_weights = np.where(mask, weights_A, weights_B)
         
         # Gaussian Mutation
-        mutation_mask = np.random.rand(len(child_weights)) < 0.25
-        mutations = np.random.normal(0, 0.2, size=len(child_weights))
+        # Bumping mutation rate to 35% probability and 0.3 variance for faster exploration
+        mutation_mask = np.random.rand(len(child_weights)) < 0.35
+        mutations = np.random.normal(0, 0.3, size=len(child_weights))
         child_weights = np.where(mutation_mask, child_weights + mutations, child_weights)
         
         # Load the new arrays back into the PyTorch models
