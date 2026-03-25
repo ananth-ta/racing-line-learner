@@ -30,9 +30,9 @@ def evaluate_population(env, population, current_gen, total_gens):
     
     # Curriculum Learning: Scale steering penalty from 0.0 to 2.0 linearly
     # Simulated Annealing / Cyclic Penalty Curriculum
-    # The penalty drops back to near 0 every 100 generations to allow aggressive exploration
+    # The penalty drops back to near 0 every 50 generations to allow aggressive exploration
     # to burst through plateaus at very sharp corners.
-    cycle_length = 100
+    cycle_length = 50
     cycle_pos = current_gen % cycle_length
     penalty_weight = 2.0 * (max(0, cycle_pos - 1) / max(1, cycle_length - 1))
     
@@ -106,9 +106,9 @@ def evolve_population(population, fitness_scores, stagnation_counter=0):
     num_envs = len(population)
     
     # Adaptive Mutation: Scale wildness directly off active stagnation!
-    # If the exact same score repeats for 15+ generations, crank to 50% probability and 0.5 variance.
-    mut_prob = min(0.50, 0.10 + (stagnation_counter / 15.0) * 0.40)
-    mut_var = min(0.50, 0.10 + (stagnation_counter / 15.0) * 0.40)
+    # If the exact same score repeats for 15+ generations, slowly raise mutation up to 25% / 0.25 variance.
+    mut_prob = min(0.25, 0.05 + (stagnation_counter / 15.0) * 0.20)
+    mut_var = min(0.25, 0.05 + (stagnation_counter / 15.0) * 0.20)
     
     # Elitism: Sort population by fitness
     sorted_indices = np.argsort(fitness_scores)[::-1]

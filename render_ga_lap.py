@@ -267,7 +267,7 @@ def record_lap(model_path, output_path):
         current_gen = int(chkpt_str)
     except ValueError:
         current_gen = 500
-    cycle_length = 100
+    cycle_length = 50
     cycle_pos = current_gen % cycle_length
     penalty_weight = 2.0 * (max(0, cycle_pos - 1) / max(1, cycle_length - 1))
     
