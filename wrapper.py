@@ -94,9 +94,10 @@ class F1TenthWrapper(gym.Wrapper):
         action[0] = self.actual_steering
         
         # 1. Reshape Action for F1TENTH
-        # Map speed from Tanh [-1, 1] up to physical speeds [4.5, 20.0]
+        # Map speed from Tanh [-1, 1] up to physical speeds [1.0, 10.0]
+        # Max speed of 10.0 m/s guarantees braking distance remains inside LiDAR sight range!
         steer = action[0]
-        speed = 4.5 + ((action[1] + 1.0) / 2.0) * (20.0 - 4.5)
+        speed = 1.0 + ((action[1] + 1.0) / 2.0) * (10.0 - 1.0)
         action_reshaped = np.array([[steer, speed]])
         
         # 2. Step the simulator
@@ -117,8 +118,8 @@ class F1TenthWrapper(gym.Wrapper):
         self.prev_steering = current_steering
         
         # Jitter penalty dynamically scales: more penalty on high speed straights
-        # Clamped between 1.0 (corners) and 20.0 (max speed straights)
-        speed_factor = np.clip(velocity, 2.0, 20.0) / 5.0 
+        # Clamped between 1.0 (corners) and 10.0 (max speed straights)
+        speed_factor = np.clip(velocity, 2.0, 10.0) / 5.0 
         jitter_penalty = steering_diff * 10.0 * speed_factor
         # A. Linear Speed Reward
         # Max velocity is 20.0 m/s, yielding up to +2.0 base survival points per frame.
