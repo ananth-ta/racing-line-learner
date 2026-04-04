@@ -162,7 +162,7 @@ class HeadlessRenderer:
         ax2.scatter([steer_x], [1.5], c=arc_color, s=300, zorder=10)
         
         ax2.text(5, 0.8, 'Speed', fontsize=20, ha='center', color='gray')
-        speed_normalized = np.clip(velocity / 10.0, 0, 1)
+        speed_normalized = np.clip(velocity / 20.0, 0, 1)
         ax2.add_patch(Rectangle((2, 0.2), 6, 0.4, facecolor='#333', edgecolor='gray'))
         ax2.add_patch(Rectangle((2, 0.2), 6 * speed_normalized, 0.4, facecolor='cyan', edgecolor='none'))
         
@@ -310,8 +310,29 @@ def record_lap(model_path, output_path):
             print(f"  Render error at step {step}: {e}")
             break
             
-        wrapped_obs, reward, done, info = wrapped_env.step(action)
-        total_reward += reward
+        # Extract generation number from model path to match training curriculum penalty
+        try:
+            gen_str = model_path.split('_gen_')[-1].split('.pt')[0]
+            current_gen = int(gen_str)
+        except (ValueError, IndexError):
+            current_gen = 500  # Default to max penalty if parsing fails
+            
+        total_gens = 500
+        penalty_weight = 2.0 * (max(0, current_gen - 1) / max(1, total_gens - 1))
+        
+        # Record raw steering before the wrapper mutates the action array
+        raw_steering = float(action[0])
+        
+        wrapped_obs, env_reward, done, info = wrapped_env.step(action)
+        
+        # Reconstruct the exact Fitness Score logic from ga_train.py
+        progress_score = info.get('progress_reward', 0.0)
+        waypoint_cleared = info.get('waypoint_cleared', False)
+        waypoint_bonus = 50.0 if waypoint_cleared else 0.0
+        steering_penalty = (abs(raw_steering) ** 2) * penalty_weight
+        
+        calculated_reward = env_reward + progress_score + waypoint_bonus - steering_penalty
+        total_reward += calculated_reward
         
         if done:
             print(f"  Episode ended at step {step} (collision)")

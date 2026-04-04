@@ -85,9 +85,9 @@ class F1TenthWrapper(gym.Wrapper):
         action[0] = self.actual_steering
         
         # 1. Reshape Action for F1TENTH
-        # Apply Speed Floor: Clip speed to [4.5, 20.0]
+        # Apply Speed Floor: Clip speed to [6.5, 20.0] to prevent tight low-speed spirals
         steer = action[0]
-        speed = np.clip(action[1], 4.5, 20.0)
+        speed = np.clip(action[1], 6.5, 20.0)
         action_reshaped = np.array([[steer, speed]])
         
         # 2. Step the simulator
@@ -111,7 +111,7 @@ class F1TenthWrapper(gym.Wrapper):
         jitter_penalty = steering_diff * 0.05
         
         # A. Gaussian Speed Reward
-        target_speed = 7.0
+        target_speed = 10.0
         variance = 2.0
         speed_reward = np.exp(-((velocity - target_speed)**2) / (2 * variance**2))
         

@@ -31,8 +31,8 @@ def evaluate_population(env, population, current_gen, total_gens):
     # Curriculum Learning: Scale steering penalty from 0.0 to 2.0 linearly
     penalty_weight = 2.0 * (max(0, current_gen - 1) / max(1, total_gens - 1))
     
-    # Stagnation limit: If 3000 timesteps pass without hitting the next checkpoint, kill the mutant.
-    STAGNATION_LIMIT = 3000
+    # Stagnation limit: If 2000 timesteps pass without hitting the next checkpoint, kill the mutant.
+    STAGNATION_LIMIT = 2000
     
     # Reset the VecEnv
     obs = env.reset()
