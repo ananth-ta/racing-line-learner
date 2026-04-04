@@ -40,6 +40,9 @@ def annotate_map():
         
         # Draw a solid red dot for the specific waypoint
         cv2.circle(img, (px, py), radius=3, color=(0, 0, 255), thickness=-1)
+        
+        # Label the dot sequentially
+        cv2.putText(img, str(index), (px + 5, py - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
 
     print("Drawing continuous racing line...")
     # Draw a green line connecting the waypoints to visualize the exact path
