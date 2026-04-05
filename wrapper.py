@@ -40,7 +40,9 @@ class F1TenthWrapper(gym.Wrapper):
         
         # --- Define Observation Space (20 Lidar + 3 Physics: Vel, Yaw, Heading Error) * n_stack ---
         self.lidar_rays = 20
-        self.obs_dim = self.lidar_rays + (3 if self.algo == 'ga' else 2)
+        self.obs_dim = self.lidar_rays + 3
+        
+        self.ppo_time_since_last_cp = 0
         # Use -inf to inf to prevent crashes if a value goes slightly negative
         low = -np.inf * np.ones(self.obs_dim * self.n_stack)
         high = np.inf * np.ones(self.obs_dim * self.n_stack)
@@ -71,6 +73,7 @@ class F1TenthWrapper(gym.Wrapper):
         self.actual_steering = 0.0
         self.current_waypoint_idx = 0
         self.prev_distance = None
+        self.ppo_time_since_last_cp = 0
             
         return self._get_stacked_obs()
 
@@ -149,6 +152,23 @@ class F1TenthWrapper(gym.Wrapper):
             else:
                 self.prev_distance = dist
                 
+        if self.algo == 'ppo':
+            reward += progress_reward
+            if waypoint_cleared:
+                reward += 50.0
+                self.ppo_time_since_last_cp = 0
+            else:
+                self.ppo_time_since_last_cp += 1
+                
+            # Apply a static steering penalty to discourage extreme drifting for PPO
+            # (Equivalent to late-stage GA curriculum)
+            steering_penalty = (abs(target_steering) ** 2) * 2.0
+            reward -= steering_penalty
+
+            if self.ppo_time_since_last_cp > 2000:
+                done = True
+                reward = -10.0
+
         # Inject tracking data into the info dict so PPO ignores it, but GA can use it
         info['waypoint_cleared'] = waypoint_cleared
         info['current_waypoint_idx'] = self.current_waypoint_idx
@@ -168,25 +188,22 @@ class F1TenthWrapper(gym.Wrapper):
         velocity = np.array([obs['linear_vels_x'][0]])
         yaw_rate = np.array([obs['ang_vels_z'][0]])
         
-        if self.algo == 'ga':
-            # Calculate heading error compass to target waypoint
-            car_x = obs['poses_x'][0]
-            car_y = obs['poses_y'][0]
-            car_yaw = obs['poses_theta'][0]
-            
-            if self.waypoints:
-                target_x, target_y = self.waypoints[self.current_waypoint_idx]
-                target_angle = math.atan2(target_y - car_y, target_x - car_x)
-                heading_error = target_angle - car_yaw
-                # Normalize to [-pi, pi]
-                heading_error = (heading_error + math.pi) % (2 * math.pi) - math.pi
-            else:
-                heading_error = 0.0
-                
-            heading_arr = np.array([heading_error])
-            final_obs = np.concatenate([downsampled_scans, velocity, yaw_rate, heading_arr])
+        # Calculate heading error compass to target waypoint
+        car_x = obs['poses_x'][0]
+        car_y = obs['poses_y'][0]
+        car_yaw = obs['poses_theta'][0]
+        
+        if self.waypoints:
+            target_x, target_y = self.waypoints[self.current_waypoint_idx]
+            target_angle = math.atan2(target_y - car_y, target_x - car_x)
+            heading_error = target_angle - car_yaw
+            # Normalize to [-pi, pi]
+            heading_error = (heading_error + math.pi) % (2 * math.pi) - math.pi
         else:
-            final_obs = np.concatenate([downsampled_scans, velocity, yaw_rate])
+            heading_error = 0.0
+            
+        heading_arr = np.array([heading_error])
+        final_obs = np.concatenate([downsampled_scans, velocity, yaw_rate, heading_arr])
             
         return final_obs.astype(np.float32)
 

@@ -27,13 +27,13 @@ def parse_args():
     parser.add_argument(
         "--save_dir", 
         type=str, 
-        default="models/ppo/", 
-        help="Directory where the final model will be saved (default: models/ppo/)"
+        default="/content/drive/MyDrive/F1Tenth/ppo", 
+        help="Directory where the final model will be saved"
     )
     parser.add_argument(
         "--checkpoint_dir", 
         type=str, 
-        default=None, 
+        default="/content/drive/MyDrive/F1Tenth/ppo", 
         help="Directory for periodic checkpoints. If None, no checkpoints are saved."
     )
     return parser.parse_args()

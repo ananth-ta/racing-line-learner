@@ -16,6 +16,15 @@ pip install pip==24.0 setuptools==65.5.0 wheel==0.38.4
 
 echo "STAGE 2: Installing project dependencies..."
 pip install -r requirements.txt
+# --- USER PROMPT ---
+echo ""
+read -p "Which algorithm do you want to train? [ga/ppo]: " algo_choice
 
-echo "Starting Phase 3 Neuroevolution..."
-python ga_train.py
+if [ "$algo_choice" == "ppo" ]; then
+    read -p "Enter a name for your PPO model (e.g., ppo_v1): " model_name
+    echo "Starting Phase 3 Neuroevolution (PPO)..."
+    python train.py --model_name "$model_name"
+else
+    echo "Starting Phase 3 Neuroevolution (GA)..."
+    python ga_train.py
+fi

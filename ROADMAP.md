@@ -15,12 +15,14 @@
 
 *(Midterms Break: Late Feb to Early March)*
 
-## Phase 3: Neuroevolution / Genetic Algorithm (Current Step - Mid March)
+## Phase 3: Neuroevolution / Genetic Algorithm ✅ (Completed Early April)
 *Focus: Gradient-Free Exploration vs. Gradient-Based Exploitation.*
 - [x] **Parallel Environments:** Implement `SubprocVecEnv` to run $N=50$ F1TENTH physics simulations simultaneously across CPU cores.
 - [x] **Population Initialization:** Initialize a population of 50 Actor networks with random weights.
-- [ ] **Evolutionary Loop:** Implement Evaluation (Lap Distance), Selection (Tournament), Crossover, and Gaussian Mutation. 
-- [ ] **Colab Pro Training:** Offload the 48-hour parallel GA training loop to Google Colab Pro to protect local hardware thermals.
+- [x] **Evolutionary Loop:** Implement Evaluation (Lap Distance), Selection (Tournament), Crossover, and Gaussian Mutation. 
+- [x] **Curriculum Learning & Exploit Mitigations:** Incrementally penalize steering vectors to cure "corkscrew" local optima and tune internal stagnation limiters.
+- [x] **Environment Parity:** Reconstruct the original PPO wrapper to share the GA's explicit waypoints and heading-error compass, establishing perfectly level 'apples to apples' structural testing grounds.
+- [x] **Automated Training Pipeline:** Offload the parallel GA and PPO training loops to headless remote pipelines (e.g. Google Colab) using dedicated bash automation scripts.
 
 ## Phase 4: Hybrid ERL (Stretch Goal - Early April)
 *Focus: Seeding gradient-based optimization with gradient-free exploration.*
@@ -32,6 +34,6 @@
 ## Phase 5: Synthesis & Evaluation (Mid-April)
 *Focus: Data analysis and final report generation.*
 - [ ] **Statistical Sweeps:** Run 5 different random seeds for the final PPO and GA models to generate reliable performance curves.
-- [ ] **Visual Analysis:** Use `render_video.py` to generate side-by-side comparisons of PPO vs. GA optimal racing lines.
+- [ ] **Visual Analysis:** Use `render_ppo_lap.py` and `render_ga_lap.py` to generate HD trajectory path traces of the optimal racing lines.
 - [ ] **Report Formatting:** Convert findings into the mandatory 2-column, US Letter AAAI conference paper LaTeX format.
 - [ ] **Submission:** Submit final PDF report and code repository (Due April 22nd).
