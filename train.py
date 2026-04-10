@@ -38,6 +38,13 @@ def parse_args():
     )
     return parser.parse_args()
 
+from typing import Callable
+
+def linear_schedule(initial_value: float) -> Callable[[float], float]:
+    def func(progress_remaining: float) -> float:
+        return progress_remaining * initial_value
+    return func
+
 def main():
     args = parse_args()
     
@@ -56,8 +63,9 @@ def main():
         env, 
         verbose=1, 
         tensorboard_log="./f1tenth_logs/", 
-        learning_rate=0.0003,
-        batch_size=64,
+        learning_rate=linear_schedule(0.0003),
+        batch_size=256,
+        ent_coef=0.01,
         gamma=0.99
     )
 

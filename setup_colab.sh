@@ -23,7 +23,7 @@ read -p "Which algorithm do you want to train? [ga/ppo]: " algo_choice
 if [ "$algo_choice" == "ppo" ]; then
     read -p "Enter a name for your PPO model (e.g., ppo_v1): " model_name
     echo "Starting Phase 3 Neuroevolution (PPO)..."
-    python train.py --model_name "$model_name"
+    python train.py --model_name "$model_name" --timesteps 5000000
 else
     echo "Starting Phase 3 Neuroevolution (GA)..."
     python ga_train.py
