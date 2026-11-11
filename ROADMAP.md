@@ -24,16 +24,22 @@
 - [x] **Environment Parity:** Reconstruct the original PPO wrapper to share the GA's explicit waypoints and heading-error compass, establishing perfectly level 'apples to apples' structural testing grounds.
 - [x] **Automated Training Pipeline:** Offload the parallel GA and PPO training loops to headless remote pipelines (e.g. Google Colab) using dedicated bash automation scripts.
 
-## Phase 4: Hybrid ERL (Stretch Goal - Early April)
-*Focus: Seeding gradient-based optimization with gradient-free exploration.*
-- [ ] **Weight Extraction:** Extract the PyTorch state dictionary from the best-performing Genetic Algorithm agent.
-- [ ] **Brain Transplant:** Load the GA weights into the PPO Actor network.
-- [ ] **The "Blind Critic" Fix:** Freeze the Actor network (`requires_grad=False`), run the simulation, and train the PPO Critic to map the state-values without causing catastrophic forgetting.
-- [ ] **Fine-Tuning:** Unfreeze the Actor, drop the learning rate, and let PPO optimize the GA's racing line.
+## Phase 3.5: PPO Deep-Horizon Optimization ✅ (Completed Mid April)
+*Focus: Stabilizing gradients over 5,000,000 timesteps to level the testing field.*
+- [x] **Gradient Smoothing:** Increased batch size from 64 to 256 to mitigate single-step mathematical noise and prevent explosive boundary clipping.
+- [x] **Linear Annealing:** Instantiated a linear learning rate schedule (`0.0003 -> 0.0`) to naturally lock in mature weights and prevent Catastrophic Forgetting.
+- [x] **Architectural Parity:** Capped max velocity constraints identically to GA (`10.0 m/s`) to perfectly mirror raw LiDAR geometry restraints.
 
-## Phase 5: Synthesis & Evaluation (Mid-April)
-*Focus: Data analysis and final report generation.*
-- [ ] **Statistical Sweeps:** Run 5 different random seeds for the final PPO and GA models to generate reliable performance curves.
-- [ ] **Visual Analysis:** Use `render_ppo_lap.py` and `render_ga_lap.py` to generate HD trajectory path traces of the optimal racing lines.
-- [ ] **Report Formatting:** Convert findings into the mandatory 2-column, US Letter AAAI conference paper LaTeX format.
+## Phase 4: Synthesis & AAAI Submission (Mid-April)
+*Focus: Data analysis and final report formatting for academic submission.*
+- [ ] **Statistical Sweeps:** Run 5 different random seeds for the final PPO and GA models to generate reliable variance curves.
+- [ ] **Visual Analysis:** Use `render_ppo_lap.py` and `render_ga_lap.py` to generate HD trajectory path traces of the optimal racing lines mapping the explicit bottleneck points.
+- [ ] **Report Formatting:** Synthesize lessons from Phase 2, 3, and 3.5 into the mandatory 2-column, US Letter AAAI conference paper LaTeX format.
 - [ ] **Submission:** Submit final PDF report and code repository (Due April 22nd).
+
+## Phase 5: Hybrid ERL (Post-Submission Future Works)
+*Focus: Out-of-scope research seeding gradient-based optimization with gradient-free exploration.*
+- [ ] **Weight Extraction:** Extract the PyTorch tensor state dictionary from the best-performing Genetic Algorithm agent.
+- [ ] **Brain Transplant:** Load the GA weights identically into the PPO Actor network initialization.
+- [ ] **The "Blind Critic" Fix:** Freeze the Actor network (`requires_grad=False`), run the simulation passively, and train the standard PPO Critic to map track state-values without overwriting mature trajectories.
+- [ ] **Fine-Tuning:** Unfreeze the Actor, drop the learning rate aggressively, and permit PPO gradients to optimize the GA's racing line.
