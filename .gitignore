@@ -6,3 +6,5 @@ tensorboard_log/
 .vscode/
 # *.zip  <-- Uncomment this later if your model files get too big for GitHub
 videos/
+# post-loop agent outputs (recorded laps, analysis)
+post_loop_runs/
