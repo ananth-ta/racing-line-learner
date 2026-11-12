@@ -32,6 +32,13 @@ LOOKBACK_S = 1.0       # s of driving before a crash that the visibility check e
 SIM_DT = 0.01          # s per simulator step
 SEGMENT_GAP = 3        # crashes whose waypoints are this close are grouped together
 MIN_SEGMENT_M = 1e-6   # waypoint segments shorter than this count as duplicates
+CAPTURE_RADIUS = 1.5   # m, wrapper.checkpoint_radius: how close counts as clearing a waypoint
+STAGNATION_STEPS = 2000
+# A "stuck" lap is relabelled "missed_waypoint" when, during the stagnation
+# window, the car came within PASS_NEAR_M of its target but never inside the
+# capture radius, and then drove at least LEFT_BEHIND_M away from it.
+PASS_NEAR_M = 5.0
+LEFT_BEHIND_M = 20.0
 
 
 # --------------------------------------------------------------------------
@@ -110,26 +117,26 @@ def visibility_check(tel, ray):
     compares visible distance ahead (map ray-cast) with braking distance at
     that step's speed. If the car never had enough visible distance in that
     window, the corner is "blind" (the wall appeared inside braking range).
+
+    visible_m / required_brake_m are measured at the START of the window
+    (LOOKBACK_S before the crash), so they show how much warning the car had.
+    last_stoppable_s says how long before the crash it could still have stopped.
     """
     n = len(tel["x"])
     start = max(0, n - int(LOOKBACK_S / SIM_DT))
     vis = np.array([ray.visible_distance(tel["x"][t], tel["y"][t], tel["theta"][t])
                     for t in range(start, n)])
     brake = braking_distance(tel["speed"][start:n])
-    margin = vis - brake
-    ok = np.where(margin >= 0)[0]
-    if len(ok):   # latest moment the car could still have stopped
-        t = ok[-1]
-        blind = False
-    else:         # never enough: report the best view it had
-        t = int(np.argmax(vis))
-        blind = True
+    ok = np.where(vis - brake >= 0)[0]
+    blind = len(ok) == 0
     return {
         "blind": blind,
-        "visible_m": round(float(vis[t]), 2),
-        "required_brake_m": round(float(brake[t]), 2),
-        "speed_at_check": round(float(tel["speed"][start + t]), 2),
-        "seconds_before_crash": round((n - 1 - (start + t)) * SIM_DT, 2),
+        "lookback_s": round((n - start) * SIM_DT, 2),
+        "visible_m": round(float(vis[0]), 2),
+        "required_brake_m": round(float(brake[0]), 2),
+        "speed_at_check": round(float(tel["speed"][start]), 2),
+        "max_visible_m": round(float(vis.max()), 2),
+        "last_stoppable_s": None if blind else round((n - 1 - (start + ok[-1])) * SIM_DT, 2),
         "visible_m_at_crash": round(float(vis[-1]), 2),
         # Sanity check of the ray-caster: the LiDAR's own forward ray.
         "lidar_front_m_at_crash": round(float(tel["scan_front"][-1]), 2),
@@ -160,19 +167,47 @@ def crash_event(lap, tel, wps, kappa, ray):
         "steer_smoothed": round(float(tel["steer_smoothed"][-1]), 3),
         "curvature": round(k, 4),
         "corner_radius_m": round(1.0 / k, 2) if k > 1e-6 else None,
+        # How far the car rotated in the lookback window. A large value means
+        # it was spinning/looping, so the straight-ahead visibility check is
+        # less meaningful than it is for a car driving into a wall.
+        "heading_change_deg": heading_change_deg(tel),
         "visibility": visibility_check(tel, ray),
     }
 
 
+def heading_change_deg(tel):
+    start = max(0, len(tel["theta"]) - int(LOOKBACK_S / SIM_DT))
+    th = np.unwrap(tel["theta"][start:])
+    return round(float(np.degrees(abs(th[-1] - th[0]))), 1)
+
+
 def stuck_event(lap, tel, wps):
-    return {
+    """Describe a lap the wrapper ended for no waypoint progress.
+
+    Returns (kind, event) where kind is "missed_waypoint" if the car drove
+    past its target without entering the capture radius and kept going,
+    or "stuck" if it really stopped making progress (e.g. circling).
+    """
+    target = int(tel["target_wp"][-1])
+    window = slice(max(0, len(tel["x"]) - STAGNATION_STEPS), None)
+    pos = np.c_[tel["x"][window], tel["y"][window]]
+    dist = np.linalg.norm(pos - wps[target], axis=1)
+    closest = int(np.argmin(dist))
+    missed = (dist[closest] <= PASS_NEAR_M and dist[closest] > CAPTURE_RADIUS
+              and dist[closest:].max() - dist[closest] >= LEFT_BEHIND_M)
+    path_m = float(np.linalg.norm(np.diff(pos, axis=0), axis=1).sum())
+    event = {
         "lap": lap["lap"],
         "mode": lap["mode"],
-        "waypoint": int(tel["target_wp"][-1]),
+        "waypoint": target,
         "nearest_waypoint": nearest_waypoint(wps, tel["x"][-1], tel["y"][-1]),
         "position": [round(float(tel["x"][-1]), 3), round(float(tel["y"][-1]), 3)],
+        "closest_approach_m": round(float(dist[closest]), 2),
+        "capture_radius_m": CAPTURE_RADIUS,
+        "distance_driven_after_m": round(path_m, 1),
         "mean_speed_last_2s": round(float(tel["speed"][-200:].mean()), 2),
     }
+    return ("missed_waypoint" if missed else "stuck"), event
 
 
 def laps_reaching(laps_tel, wp):
@@ -224,18 +259,18 @@ def analyze_run(run_dir):
     kappa = waypoint_curvature(wps)
     ray = MapRaycaster(track)
 
-    laps_tel, crashes, stuck = [], [], []
+    laps_tel, crashes, stuck, missed = [], [], [], []
+    counts = {}
     for lap in meta["laps"]:
         tel = dict(np.load(run_dir / f"lap_{lap['lap']:03d}.npz"))
         laps_tel.append(tel)
-        if lap["termination"] == "crash":
+        kind = lap["termination"]
+        if kind == "crash":
             crashes.append(crash_event(lap, tel, wps, kappa, ray))
-        elif lap["termination"] == "stuck":
-            stuck.append(stuck_event(lap, tel, wps))
-
-    counts = {}
-    for lap in meta["laps"]:
-        counts[lap["termination"]] = counts.get(lap["termination"], 0) + 1
+        elif kind == "stuck":
+            kind, event = stuck_event(lap, tel, wps)
+            (missed if kind == "missed_waypoint" else stuck).append(event)
+        counts[kind] = counts.get(kind, 0) + 1
     finished = [lap for lap in meta["laps"] if lap["termination"] == "finished"]
 
     analysis = {
@@ -260,6 +295,7 @@ def analyze_run(run_dir):
         "crash_segments": group_crashes(crashes, laps_tel, len(wps)),
         "crashes": crashes,
         "stuck": stuck,
+        "missed_waypoints": missed,
     }
     out = run_dir / "analysis.json"
     out.write_text(json.dumps(analysis, indent=2))
@@ -275,8 +311,19 @@ def print_report(a):
               f"{seg['crashes']}/{seg['laps_reaching']} crashed, "
               f"mean speed {seg['mean_speed']} m/s, blind {seg['blind_fraction']:.0%}, "
               f"visible {seg['mean_visible_m']} m vs brake {seg['mean_required_brake_m']} m")
+    for c in a["crashes"]:
+        v = c["visibility"]
+        stop = f"could still stop {v['last_stoppable_s']}s before" if not v["blind"] else "blind"
+        print(f"  crash: lap {c['lap']} at waypoint {c['waypoint']}, {c['speed']} m/s, "
+              f"turned {c['heading_change_deg']} deg in last {v['lookback_s']}s; "
+              f"{v['lookback_s']}s before: visible {v['visible_m']} m vs brake "
+              f"{v['required_brake_m']} m ({stop})")
     for st in a["stuck"]:
         print(f"  stuck: lap {st['lap']} at waypoint {st['waypoint']}")
+    for m in a["missed_waypoints"]:
+        print(f"  missed waypoint: lap {m['lap']} passed waypoint {m['waypoint']} at "
+              f"{m['closest_approach_m']} m (needs <= {m['capture_radius_m']} m), "
+              f"then drove {m['distance_driven_after_m']} m")
 
 
 def main():
