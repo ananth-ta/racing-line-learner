@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "racing-line-learner"
+version = "0.1.0"
+description = "PPO racing agent for F1TENTH Gym with bounded reasoning supervisors"
+requires-python = ">=3.8"
+# Runtime dependencies are pinned in requirements.txt (fragile Python 3.8 stack);
+# install those first, then this package with --no-deps.
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["racing_line_learner*"]
