@@ -200,3 +200,100 @@ class TestWrapperFeatures(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@requires_sim
+class TestV2Features(unittest.TestCase):
+    def make(self, **overrides):
+        from racing_line_learner.env.wrapper import make_env
+        env = make_env("cota", replace(get_preset("v2"), **overrides))
+        self.addCleanup(env.close)
+        return env
+
+    def test_spaces(self):
+        env = self.make()
+        self.assertEqual(env.action_space.shape, (2,))
+        np.testing.assert_array_equal(env.action_space.low, [-1.0, -1.0])
+        self.assertEqual(env.observation_space.shape, ((20 + 3 + 8) * 3,))
+
+    def test_normalized_action_mapping(self):
+        env = self.make()
+        env.reset(spawn_idx=0)
+        _, _, _, info = env.step(np.array([1.0, 1.0], dtype=np.float32))
+        self.assertAlmostEqual(info["raw_steering"], 0.4189)
+        self.assertAlmostEqual(info["steering"], 0.4189)        # EMA off in v2
+        self.assertAlmostEqual(info["speed_command"], 20.0)
+        _, _, _, info = env.step(np.array([-1.0, -1.0], dtype=np.float32))
+        self.assertAlmostEqual(info["raw_steering"], -0.4189)
+        self.assertAlmostEqual(info["speed_command"], 2.0)       # speed floor
+        _, _, _, info = env.step(np.array([5.0, 0.0], dtype=np.float32))   # out of range is clipped
+        self.assertAlmostEqual(info["raw_steering"], 0.4189)
+        self.assertAlmostEqual(info["speed_command"], 5.0)    # action 0 -> speed_mid
+
+    def test_action_repeat_sums_rewards(self):
+        env = self.make()
+        env.reset(spawn_idx=0)
+        for i in range(1, 6):
+            _, reward, done, info = env.step(np.array([0.0, 0.0], dtype=np.float32))
+            self.assertEqual(info["sim_steps"], 4 * i)
+            self.assertEqual(info["episode_steps"], i)
+            self.assertAlmostEqual(reward, sum(info["reward_terms"].values()), places=9)
+            self.assertAlmostEqual(info["reward_terms"]["time"], -0.4)   # 4 x time_cost
+        self.assertFalse(done)
+
+    def test_action_repeat_stops_at_terminal_step(self):
+        env = self.make(stagnation_steps=6)
+        env.reset(spawn_idx=0)
+        for _ in range(10):
+            # Steer hard off the line at the floor speed until the episode ends.
+            _, reward, done, info = env.step(np.array([1.0, -1.0], dtype=np.float32))
+            if done:
+                break
+        self.assertTrue(done)
+        self.assertIn(info["termination"], ("stagnation", "collision"))
+        if info["termination"] == "stagnation":
+            # Stagnation fires on the 7th simulator step without progress, mid-repeat: the
+            # loop must stop there rather than finish the 4-step block.
+            self.assertEqual(info["sim_steps"], 7)
+
+    def test_normalized_observation_ranges(self):
+        env = self.make()
+        obs = env.reset(spawn_idx=100)
+        frame = obs[-env.obs_dim:]
+        self.assertTrue(np.all(frame[:20] <= 1.0 + 1e-6) and np.all(frame[:20] >= 0.0))
+        self.assertTrue(np.all(np.abs(frame[20:23]) <= 1.0 + 1e-6))
+        self.assertTrue(np.all(np.abs(frame[23:]) < 3.0))
+
+    def test_lookahead_sees_the_hairpin(self):
+        # Spawn a few waypoints before the hairpin at 146: the lookahead should show high curvature.
+        env = self.make(obs_normalize=False)
+        obs = env.reset(spawn_idx=141)
+        look = np.abs(obs[-8:])
+        self.assertGreater(look.max(), 0.2)    # radius < 5 m within 16 m
+        far = np.abs(env.reset(spawn_idx=125)[-8:])
+        self.assertEqual(far.shape, (8,))
+
+    def test_v2_drives(self):
+        env = self.make()
+        obs = env.reset(spawn_idx=0)
+        cleared = 0
+        for _ in range(150):
+            heading = obs[env.obs_dim * 2 + 22] * np.pi   # last frame's heading error (de-normalised)
+            obs, reward, done, info = env.step(np.array([np.clip(heading / 0.4189, -1, 1), -0.2], dtype=np.float32))
+            cleared += int(info["waypoint_cleared"])
+            if done:
+                break
+        self.assertGreater(cleared, 3)
+
+
+@requires_sim
+class TestRandomSpawns(unittest.TestCase):
+    def test_spawn_random_covers_track(self):
+        from racing_line_learner.env.wrapper import make_env
+        env = make_env("cota", replace(get_preset("laptime"), spawn_random=0.75), seed=1)
+        self.addCleanup(env.close)
+        spawns = [(env.reset(), env.spawn_idx)[1] for _ in range(80)]
+        random = [s for s in spawns if s is not None]
+        self.assertTrue(40 <= len(random) <= 75, len(random))
+        self.assertGreater(len(set(random)), 30)          # spread over the lap
+        self.assertIn(None, spawns)                        # some standard starts remain

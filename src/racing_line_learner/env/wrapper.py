@@ -1,21 +1,32 @@
 """F1TENTH Gym wrapper: observation processing, action mapping, rewards and termination.
 
-The observation is ``n_stack`` frames of ``lidar_rays`` downsampled LiDAR
-ranges (metres, unnormalised) plus ``[velocity, yaw_rate, heading_error]``,
-i.e. 23 x 3 = 69 values with the defaults. The heading error points at the
-current target waypoint.
+Each observation frame is ``lidar_rays`` downsampled LiDAR ranges plus
+``[velocity, yaw_rate, heading_error]`` (the heading error points at the
+current target waypoint), optionally followed by ``lookahead_k`` samples of
+racing-line curvature ahead of the car. ``n_stack`` frames are concatenated:
+23 x 3 = 69 values with the defaults. With ``obs_normalize`` the features
+are divided by fixed scales (LiDAR range, ``speed_max``, 10 rad/s, pi,
+1/2 m) so they lie roughly in [-1, 1].
+
+Actions are ``[steering, speed]``, either in physical units (radians, m/s)
+or, with ``action_normalized``, in [-1, 1] mapped to ``+/-steer_limit`` and
+``[speed_floor, speed_max]``. Each action is held for ``action_repeat``
+simulator steps (0.01 s each); rewards are summed over them, and the episode
+stops at the first terminal simulator step.
 
 Every step's ``info`` carries:
 
 * ``termination``: ``None`` or one of :data:`TERMINATIONS`;
-* ``raw_steering`` (the policy's command) and ``steering`` (after the EMA
-  filter, what the simulator receives), plus ``speed_command``;
-* ``reward_terms``: the reward broken into named parts;
+* ``raw_steering`` (the policy's command, radians) and ``steering`` (after
+  the EMA filter, what the simulator receives), plus ``speed_command``;
+* ``reward_terms``: the reward broken into named parts (summed over the
+  repeated simulator steps);
 * ``current_waypoint_idx``, ``waypoint_cleared``, ``progress_reward``;
 * ``laps`` completed so far, and ``lap_time`` (seconds) on the step a lap
   completes. Laps are counted by the simulator when the car re-enters the
   start zone around its spawn pose; the simulator itself ends the episode
   after 2 laps, ``EnvConfig.max_laps=1`` ends it after one;
+* ``episode_steps`` (policy steps) and ``sim_steps`` (simulator steps);
 * ``TimeLimit.truncated`` when ``max_episode_steps`` ends the episode, so
   SB3 bootstraps instead of treating it as a true terminal.
 
@@ -32,7 +43,7 @@ import gym
 import numpy as np
 from gym import spaces
 
-from ..config import FROZEN_FIELDS, EnvConfig
+from ..config import CURVATURE_SCALE, FROZEN_FIELDS, LIDAR_MAX_RANGE, YAW_RATE_SCALE, EnvConfig
 from .rewards import laptime_reward, legacy_reward
 from .tracks import Track, load_track
 
@@ -52,12 +63,15 @@ class F1TenthWrapper(gym.Wrapper):
         self._check_spawn(config)
         self._rng = np.random.RandomState(seed)
 
-        self.action_space = spaces.Box(
-            low=np.array([-config.steer_limit, 0.0]),
-            high=np.array([config.steer_limit, config.speed_max]),
-            dtype=np.float32,
-        )
-        self.obs_dim = config.lidar_rays + 3
+        if config.action_normalized:
+            self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
+        else:
+            self.action_space = spaces.Box(
+                low=np.array([-config.steer_limit, 0.0]),
+                high=np.array([config.steer_limit, config.speed_max]),
+                dtype=np.float32,
+            )
+        self.obs_dim = config.lidar_rays + 3 + config.lookahead_k
         self.observation_space = spaces.Box(
             -np.inf * np.ones(self.obs_dim * config.n_stack),
             np.inf * np.ones(self.obs_dim * config.n_stack),
@@ -109,7 +123,8 @@ class F1TenthWrapper(gym.Wrapper):
         self.actual_steering = 0.0     # EMA-filtered steering state
         self.prev_distance = None      # legacy: distance to target at previous step
         self.ppo_time_since_last_cp = 0
-        self.episode_steps = 0
+        self.episode_steps = 0         # policy steps
+        self.sim_steps = 0             # simulator steps
         self.laps = 0
         self._lap_start_time = 0.0
         self._s = None                 # laptime: arc length at previous step
@@ -118,6 +133,10 @@ class F1TenthWrapper(gym.Wrapper):
     def choose_spawn(self) -> Optional[int]:
         """Spawn waypoint for the next episode under the curriculum, or ``None`` for the default start."""
         c = self.config
+        # Each check draws from the RNG only when enabled, so configs without
+        # random starts keep their exact spawn sequence.
+        if c.spawn_random > 0.0 and self._rng.rand() < c.spawn_random:
+            return int(self._rng.randint(self.track.n_waypoints))
         if c.spawn_mix > 0.0 and c.spawn_waypoints and self._rng.rand() < c.spawn_mix:
             return int(self._rng.choice(c.spawn_waypoints))
         return None
@@ -150,18 +169,21 @@ class F1TenthWrapper(gym.Wrapper):
         obs, _, _, _ = self.env.reset(poses=np.array([pose]), **kwargs)
         self.last_raw_obs = obs
 
-        # Legacy quirk: the original reset() built the first frame *before*
-        # resetting the target waypoint, so its heading error points at the
-        # previous episode's target. Reproduced for the default start only.
-        legacy_quirk = self.config.reward_mode == "legacy" and target == 0 and spawn_idx is None
-        if legacy_quirk:
-            frame = self.process_obs(obs)
-        self._reset_state(target_idx=target, spawn_idx=spawn_idx)
-        if not legacy_quirk:
-            frame = self.process_obs(obs)
-        if self.config.reward_mode == "laptime":
+        if self.config.reward_mode == "legacy":
+            # Legacy quirk: the original reset() built the first frame *before*
+            # resetting the target waypoint, so its heading error points at the
+            # previous episode's target. Reproduced for the default start only.
+            legacy_quirk = target == 0 and spawn_idx is None
+            if legacy_quirk:
+                frame = self.process_obs(obs)
+            self._reset_state(target_idx=target, spawn_idx=spawn_idx)
+            if not legacy_quirk:
+                frame = self.process_obs(obs)
+        else:
+            self._reset_state(target_idx=target, spawn_idx=spawn_idx)
             proj = self.track.project((obs["poses_x"][0], obs["poses_y"][0]))
             self._s, self._seg_hint = proj.s, proj.segment
+            frame = self.process_obs(obs, s=proj.s)
 
         for _ in range(self.config.n_stack):
             self.frames.append(frame)
@@ -171,61 +193,100 @@ class F1TenthWrapper(gym.Wrapper):
     # Step
     # ------------------------------------------------------------------ #
 
-    def step(self, action):
+    def _map_action(self, action):
+        """Policy action -> ``(raw_steer, filtered_steer, speed)`` in physical units."""
         c = self.config
+        if c.action_normalized:
+            a = np.clip(np.asarray(action, dtype=np.float64).reshape(-1), -1.0, 1.0)
+            raw_steer = float(a[0]) * c.steer_limit
+            self.actual_steering = (c.ema_alpha * raw_steer) + ((1.0 - c.ema_alpha) * self.actual_steering)
+            u = float(a[1])
+            if c.speed_mid is None:
+                speed = c.speed_floor + (u + 1.0) * 0.5 * (c.speed_max - c.speed_floor)
+            elif u < 0.0:   # piecewise linear: -1 -> floor, 0 -> mid, +1 -> max
+                speed = c.speed_mid + u * (c.speed_mid - c.speed_floor)
+            else:
+                speed = c.speed_mid + u * (c.speed_max - c.speed_mid)
+            return raw_steer, self.actual_steering, speed
+
         action = np.array(action, copy=True)  # never mutate the caller's array
         raw_steer = action[0]
-
         # EMA low-pass filter (mechanical damper). Written back into the action
         # array so the value has the action's dtype, exactly as before.
         self.actual_steering = (c.ema_alpha * raw_steer) + ((1.0 - c.ema_alpha) * self.actual_steering)
         action[0] = self.actual_steering
         steer = action[0]
         speed = np.clip(action[1], c.speed_floor, c.speed_max)
+        return raw_steer, steer, speed
 
-        obs, _, env_done, info = self.env.step(np.array([[steer, speed]]))
-        self.last_raw_obs = obs
+    def step(self, action):
+        c = self.config
+        raw_steer, steer, speed = self._map_action(action)
+
+        reward = 0.0
+        terms = {}
+        cleared = False
+        progress_reward = 0.0
+        lap_time = None
+        termination = None
+        done = False
+        info = {}
+        frame = None
+
+        for _ in range(c.action_repeat):
+            obs, _, env_done, info = self.env.step(np.array([[steer, speed]]))
+            self.last_raw_obs = obs
+            self.sim_steps += 1
+
+            collision = bool(obs["collisions"][0])
+            agent_pos = np.array([obs["poses_x"][0], obs["poses_y"][0]])
+
+            # Laps, as counted by the simulator (crossing the spawn pose's start zone).
+            lap_event = False
+            laps = int(obs["lap_counts"][0])
+            if laps > self.laps:
+                now = float(getattr(self.env.unwrapped, "current_time", self.sim_steps * 0.01))
+                lap_time, self._lap_start_time, self.laps = now - self._lap_start_time, now, laps
+                lap_event = True
+            max_laps_reached = c.max_laps is not None and laps >= c.max_laps
+            lap_complete = (bool(env_done) or max_laps_reached) and not collision
+
+            if c.reward_mode == "legacy":
+                frame = self.process_obs(obs)
+                r, t, clr, pr, stagnated = self._legacy_step(frame, raw_steer, agent_pos, env_done)
+            else:
+                proj = self.track.project(agent_pos, hint=self._seg_hint)
+                frame = self.process_obs(obs, s=proj.s)
+                # float32 round-trip: the same value the observation frame holds.
+                velocity = float(np.float32(obs["linear_vels_x"][0]))
+                r, t, clr, pr, stagnated = self._laptime_step(
+                    proj, velocity, raw_steer, collision, lap_complete, lap_event
+                )
+            self.prev_steering = raw_steer
+
+            reward += r
+            for k, v in t.items():
+                terms[k] = terms.get(k, 0.0) + v
+            cleared = cleared or clr
+            progress_reward += pr
+
+            done = bool(env_done) or stagnated or max_laps_reached
+            if collision:
+                termination = "collision"
+            elif lap_complete:
+                termination = "lap_complete"
+            elif stagnated:
+                termination = "stagnation"
+            elif c.max_episode_steps is not None and self.sim_steps >= c.max_episode_steps:
+                termination = "time_limit"
+                done = True
+                info["TimeLimit.truncated"] = True
+            if done:
+                break
+
         self.episode_steps += 1
-
-        frame = self.process_obs(obs)
         self.frames.append(frame)
         stacked = self._get_stacked_obs()
-
-        collision = bool(obs["collisions"][0])
-        agent_pos = np.array([obs["poses_x"][0], obs["poses_y"][0]])
-
-        # Laps, as counted by the simulator (crossing the spawn pose's start zone).
-        lap_time = None
-        laps = int(obs["lap_counts"][0])
-        if laps > self.laps:
-            now = float(getattr(self.env.unwrapped, "current_time", self.episode_steps * 0.01))
-            lap_time, self._lap_start_time, self.laps = now - self._lap_start_time, now, laps
-        max_laps_reached = c.max_laps is not None and laps >= c.max_laps
-        lap_complete = (bool(env_done) or max_laps_reached) and not collision
-
-        if c.reward_mode == "legacy":
-            reward, terms, cleared, progress_reward, stagnated = self._legacy_step(
-                frame, raw_steer, agent_pos, env_done
-            )
-        else:
-            reward, terms, cleared, progress_reward, stagnated = self._laptime_step(
-                frame, raw_steer, agent_pos, collision, lap_complete, lap_time is not None
-            )
-        self.prev_steering = raw_steer
-
-        done = bool(env_done) or stagnated or max_laps_reached
-        if collision:
-            termination = "collision"
-        elif lap_complete:
-            termination = "lap_complete"
-        elif stagnated:
-            termination = "stagnation"
-        elif c.max_episode_steps is not None and self.episode_steps >= c.max_episode_steps:
-            termination = "time_limit"
-            done = True
-            info["TimeLimit.truncated"] = True
-        else:
-            termination = None
 
         info["termination"] = termination
         info["waypoint_cleared"] = cleared
@@ -236,6 +297,7 @@ class F1TenthWrapper(gym.Wrapper):
         info["speed_command"] = float(speed)
         info["reward_terms"] = terms
         info["episode_steps"] = self.episode_steps
+        info["sim_steps"] = self.sim_steps
         info["spawn_idx"] = self.spawn_idx
         info["laps"] = self.laps
         if lap_time is not None:
@@ -278,10 +340,9 @@ class F1TenthWrapper(gym.Wrapper):
         )
         return reward, terms, cleared, progress_reward, stagnated
 
-    def _laptime_step(self, frame, raw_steer, agent_pos, collision, lap_complete, lap_event):
+    def _laptime_step(self, proj, velocity, raw_steer, collision, lap_complete, lap_event):
         c = self.config
         track = self.track
-        proj = track.project(agent_pos, hint=self._seg_hint)
         progress_m = track.progress_delta(self._s, proj.s)
         self._s, self._seg_hint = proj.s, proj.segment
 
@@ -301,7 +362,7 @@ class F1TenthWrapper(gym.Wrapper):
 
         reward, terms = laptime_reward(
             c,
-            velocity=float(frame[-3]),
+            velocity=velocity,
             raw_steer=float(raw_steer),
             prev_raw_steer=float(self.prev_steering),
             progress_m=progress_m,
@@ -316,11 +377,16 @@ class F1TenthWrapper(gym.Wrapper):
     # Observation
     # ------------------------------------------------------------------ #
 
-    def process_obs(self, obs) -> np.ndarray:
-        """One frame: downsampled LiDAR + ``[velocity, yaw_rate, heading_error]``."""
+    def process_obs(self, obs, s: Optional[float] = None) -> np.ndarray:
+        """One frame: LiDAR + ``[velocity, yaw_rate, heading_error]`` (+ lookahead curvature).
+
+        ``s`` is the car's arc length on the racing line, needed only for
+        the lookahead features (computed if not given).
+        """
+        c = self.config
         raw_scans = obs["scans"][0]
-        step = len(raw_scans) // self.config.lidar_rays
-        scans = raw_scans[::step][: self.config.lidar_rays]
+        step = len(raw_scans) // c.lidar_rays
+        scans = raw_scans[::step][: c.lidar_rays]
 
         velocity = np.array([obs["linear_vels_x"][0]])
         yaw_rate = np.array([obs["ang_vels_z"][0]])
@@ -329,8 +395,23 @@ class F1TenthWrapper(gym.Wrapper):
         target_x, target_y = self.track.waypoints[self.current_waypoint_idx]
         heading_error = math.atan2(target_y - car_y, target_x - car_x) - car_yaw
         heading_error = (heading_error + math.pi) % (2 * math.pi) - math.pi
+        heading = np.array([heading_error])
 
-        return np.concatenate([scans, velocity, yaw_rate, np.array([heading_error])]).astype(np.float32)
+        if c.obs_normalize:
+            scans = scans / LIDAR_MAX_RANGE
+            velocity = velocity / c.speed_max
+            yaw_rate = yaw_rate / YAW_RATE_SCALE
+            heading = heading / math.pi
+        parts = [scans, velocity, yaw_rate, heading]
+
+        if c.lookahead_k:
+            if s is None:
+                s = self.track.project((car_x, car_y), hint=self._seg_hint).s
+            ahead = s + c.lookahead_spacing * np.arange(1, c.lookahead_k + 1)
+            curvature = self.track.curvature_at(ahead)
+            parts.append(curvature * CURVATURE_SCALE if c.obs_normalize else curvature)
+
+        return np.concatenate(parts).astype(np.float32)
 
     def _get_stacked_obs(self) -> np.ndarray:
         assert len(self.frames) == self.config.n_stack

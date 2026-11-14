@@ -63,6 +63,16 @@ Presets:
 |---|---|---|
 | `legacy` | The CS 5180 reward, reproduced exactly | Default; for comparing with old checkpoints |
 | `laptime` | Progress along the racing line, minus a per-step time cost, plus a lap bonus | Steering limited to the simulator's ±0.4189 rad; one-lap episodes |
+| `v2` | As `laptime` | Normalised actions and observations, action repeat 4 (25 Hz policy), 2 m/s speed floor, no steering filter, 8-sample curvature lookahead |
+
+Ablations override single fields of a preset, and `--n_envs` runs several simulators in parallel (`--n_steps` is per environment):
+
+```bash
+python -m racing_line_learner.train --run_name cota_v2_s0 --preset v2 --n_envs 8 --n_steps 512 --timesteps 1250000
+python -m racing_line_learner.train --run_name cota_v2_floor65_s0 --preset v2 --env speed_floor=6.5 --env speed_mid=8.0 --n_envs 8 --n_steps 512 --timesteps 1250000
+```
+
+`--timesteps` counts policy steps. With action repeat 4, 1.25M policy steps are 5M simulator steps, the same driving time as a 5M-step `legacy` or `laptime` run.
 
 Use the environment directly:
 

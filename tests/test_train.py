@@ -44,6 +44,27 @@ class TestHelpers(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parse_args(["--run_name", "../escape"])
 
+    def test_env_overrides_in_spec(self):
+        spec = build_run_spec(parse_args(["--run_name", "r", "--preset", "v2", "--env", "speed_floor=6.5",
+                                          "--env", "speed_mid=8.0", "--env", "lookahead_k=0"]))
+        self.assertEqual(spec["env_config"]["speed_floor"], 6.5)
+        self.assertEqual(spec["env_config"]["lookahead_k"], 0)
+        self.assertEqual(spec["env_overrides"], {"speed_floor": 6.5, "speed_mid": 8.0, "lookahead_k": 0})
+        with self.assertRaises(SystemExit):
+            build_run_spec(parse_args(["--run_name", "r", "--env", "action_repeat=4"]))  # legacy preset
+
+    def test_old_run_json_still_resumes(self):
+        # A run.json written before v2 fields / n_envs existed must match the same command today.
+        from racing_line_learner.train.ppo import _spec_mismatches
+        current = build_run_spec(parse_args(["--run_name", "r", "--preset", "laptime"]))
+        old = json.loads(json.dumps(current))
+        for key in ("lookahead_k", "lookahead_spacing", "obs_normalize", "action_normalized", "action_repeat"):
+            del old["env_config"][key]
+        del old["n_envs"], old["env_overrides"]
+        self.assertEqual(_spec_mismatches(old, current), [])
+        old["env_config"]["time_cost"] = 0.2
+        self.assertEqual(_spec_mismatches(old, current), ["env_config"])
+
     def test_run_spec_applies_recommendation(self):
         with tempfile.TemporaryDirectory() as tmp:
             rec = Path(tmp) / "rec.json"
@@ -97,6 +118,21 @@ class TestTrainingSmoke(unittest.TestCase):
             self.assertEqual(final3.name, "ppo_cota_smoke_ft_1024_steps.zip")
             meta = json.loads((Path(tmp) / "runs" / "smoke_ft" / "run.json").read_text())
             self.assertEqual(meta["start_timesteps"], 512)
+
+            # 'already complete' reports the checkpoint that actually exists.
+            path, log = self.run_main(*base)
+            self.assertTrue(path.exists(), path)
+
+    def test_v2_parallel_envs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                final = main(["--run_name", "par", "--output_dir", tmp, "--preset", "v2", "--n_envs", "2",
+                              "--timesteps", "512", "--n_steps", "128", "--batch_size", "64",
+                              "--checkpoint_freq", "256"])
+            ckpts = sorted(p.name for p in final.parent.iterdir())
+            self.assertIn("ppo_cota_par_256_steps.zip", ckpts)
+            self.assertEqual(final.name, "ppo_cota_par_512_steps.zip")
 
 
 if __name__ == "__main__":

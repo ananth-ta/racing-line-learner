@@ -68,6 +68,15 @@ class TestGeometry(unittest.TestCase):
         t_cw = Track("circle_cw", "unused", ".png", np.c_[5 * np.cos(-ang), 5 * np.sin(-ang)])
         self.assertTrue(np.all(t_cw.curvature() < 0))
 
+    def test_curvature_at_interpolates_and_wraps(self):
+        ang = np.linspace(0, 2 * math.pi, 60, endpoint=False)
+        t = Track("circle", "unused", ".png", np.c_[5 * np.cos(ang), 5 * np.sin(ang)])
+        np.testing.assert_allclose(t.curvature_at(np.array([0.0, 1.3, t.length + 2.0, -1.0])), 0.2, rtol=1e-2)
+        sq = square()
+        k = sq.curvature_at(np.linspace(0, sq.length, 50))
+        self.assertTrue(np.all(np.isfinite(k)))
+        self.assertGreater(k.max(), 0.0)   # corners turn left on this CCW square
+
     def test_spawn_pose(self):
         t = square()
         x, y, theta = t.spawn_pose(4)

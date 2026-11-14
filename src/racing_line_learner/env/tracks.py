@@ -149,6 +149,24 @@ class Track:
             k[i] = 2.0 * cross / denom
         return k
 
+    def smoothed_curvature(self) -> np.ndarray:
+        """Curvature averaged over each waypoint and its two neighbours (cached).
+
+        Curvature from waypoints ~3 m apart is noisy; this is what the
+        lookahead observation uses.
+        """
+        if not hasattr(self, "_smooth_k"):
+            k = self.curvature()
+            self._smooth_k = (np.roll(k, 1) + k + np.roll(k, -1)) / 3.0
+        return self._smooth_k
+
+    def curvature_at(self, s) -> np.ndarray:
+        """Smoothed curvature at arc length(s) ``s``, linearly interpolated between waypoints."""
+        k = self.smoothed_curvature()
+        xp = np.append(self.cum_s, self.length)
+        fp = np.append(k, k[0])
+        return np.interp(np.mod(s, self.length), xp, fp)
+
     # ------------------------------------------------------------------ #
     # Projection / progress
     # ------------------------------------------------------------------ #

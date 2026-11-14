@@ -158,3 +158,26 @@ class TestLaptimeReward(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestV2Config(unittest.TestCase):
+    def test_v2_preset(self):
+        from racing_line_learner.config import get_preset
+        v2 = get_preset("v2")
+        self.assertEqual((v2.reward_mode, v2.action_normalized, v2.action_repeat), ("laptime", True, 4))
+        self.assertEqual((v2.speed_floor, v2.ema_alpha, v2.lookahead_k, v2.obs_normalize), (2.0, 1.0, 8, True))
+        self.assertEqual((v2.speed_mid, v2.terminal_penalty, v2.spawn_random), (5.0, 1000.0, 0.75))
+
+    def test_legacy_mode_rejects_v2_features(self):
+        for bad in ({"action_repeat": 2}, {"action_normalized": True}, {"lookahead_k": 4}, {"obs_normalize": True}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                replace(LEGACY, **bad)
+
+    def test_parse_overrides(self):
+        from racing_line_learner.config import parse_overrides
+        o = parse_overrides(["speed_floor=6.5", "lookahead_k=0", "obs_normalize=false", "spawn_waypoints=[3,4]"])
+        self.assertEqual(o, {"speed_floor": 6.5, "lookahead_k": 0, "obs_normalize": False, "spawn_waypoints": (3, 4)})
+        self.assertEqual(parse_overrides(["reward_mode=laptime"]), {"reward_mode": "laptime"})
+        for bad in (["nope=1"], ["speed_floor"]):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                parse_overrides(bad)
