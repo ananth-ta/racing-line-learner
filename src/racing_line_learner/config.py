@@ -116,6 +116,7 @@ class EnvConfig:
     stagnation_steps: int = 2000       # simulator steps (0.01 s each) without clearing a waypoint
     max_episode_steps: Optional[int] = None  # time limit in simulator steps (None = no limit)
     max_laps: Optional[int] = None     # end after this many laps (None = simulator default: 2 laps)
+    lap_timing: str = "spawn"          # "spawn": simulator laps around the spawn pose; "line": start/finish line
 
     # --- Spawn curriculum ---
     spawn_waypoints: Tuple[int, ...] = ()
@@ -161,6 +162,10 @@ class EnvConfig:
         if self.speed_mid is not None and not self.speed_floor < self.speed_mid < self.speed_max:
             errors.append(f"speed_mid ({self.speed_mid}) must lie strictly between speed_floor ({self.speed_floor}) "
                           f"and speed_max ({self.speed_max}); when raising the floor, set speed_mid too")
+        if self.lap_timing not in ("spawn", "line"):
+            errors.append(f"lap_timing must be 'spawn' or 'line', got {self.lap_timing!r}")
+        if self.lap_timing == "line" and self.reward_mode != "laptime":
+            errors.append("lap_timing='line' needs reward_mode='laptime' (it uses the racing-line projection)")
         if self.reward_mode == "legacy":
             # The legacy reward reads raw observation values and assumes one
             # simulator step per action; keep that mode exactly as it was.

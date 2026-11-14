@@ -45,6 +45,7 @@ import numpy as np
 from gym import spaces
 
 from ..config import CURVATURE_SCALE, FROZEN_FIELDS, LIDAR_MAX_RANGE, YAW_RATE_SCALE, EnvConfig
+from .laps import LineLapTimer
 from .rewards import laptime_reward, legacy_reward
 from .tracks import Track, load_track
 
@@ -80,6 +81,7 @@ class F1TenthWrapper(gym.Wrapper):
         )
         self.frames = deque(maxlen=config.n_stack)
         self.last_raw_obs = None
+        self._lap_timer = LineLapTimer(track.length)
         self._reset_state(target_idx=0, spawn_idx=None)
 
     # ------------------------------------------------------------------ #
@@ -187,6 +189,7 @@ class F1TenthWrapper(gym.Wrapper):
             self._reset_state(target_idx=target, spawn_idx=spawn_idx)
             proj = self.track.project((obs["poses_x"][0], obs["poses_y"][0]))
             self._s, self._seg_hint = proj.s, proj.segment
+            self._lap_timer.reset(proj.s, self._sim_time())
             frame = self.process_obs(obs, s=proj.s)
 
         for _ in range(self.config.n_stack):
@@ -245,21 +248,33 @@ class F1TenthWrapper(gym.Wrapper):
             collision = bool(obs["collisions"][0])
             agent_pos = np.array([obs["poses_x"][0], obs["poses_y"][0]])
 
-            # Laps, as counted by the simulator (crossing the spawn pose's start zone).
             lap_event = False
-            laps = int(obs["lap_counts"][0])
-            if laps > self.laps:
-                now = float(getattr(self.env.unwrapped, "current_time", self.sim_steps * 0.01))
-                lap_time, self._lap_start_time, self.laps = now - self._lap_start_time, now, laps
-                lap_event = True
-            max_laps_reached = c.max_laps is not None and laps >= c.max_laps
-            lap_complete = (bool(env_done) or max_laps_reached) and not collision
+            proj = None
+            if c.lap_timing == "line":
+                # Laps between forward crossings of the start/finish line.
+                proj = self.track.project(agent_pos, hint=self._seg_hint)
+                lt = self._lap_timer.update(self._s, self.track.progress_delta(self._s, proj.s), self._sim_time())
+                if lt is not None:
+                    lap_time, lap_event, self.laps = lt, True, self._lap_timer.laps
+                laps = self.laps
+                max_laps_reached = c.max_laps is not None and laps >= c.max_laps
+                lap_complete = max_laps_reached and not collision
+            else:
+                # Laps, as counted by the simulator (crossing the spawn pose's start zone).
+                laps = int(obs["lap_counts"][0])
+                if laps > self.laps:
+                    now = self._sim_time()
+                    lap_time, self._lap_start_time, self.laps = now - self._lap_start_time, now, laps
+                    lap_event = True
+                max_laps_reached = c.max_laps is not None and laps >= c.max_laps
+                lap_complete = (bool(env_done) or max_laps_reached) and not collision
 
             if c.reward_mode == "legacy":
                 frame = self.process_obs(obs)
                 r, t, clr, pr, stagnated = self._legacy_step(frame, raw_steer, agent_pos, env_done)
             else:
-                proj = self.track.project(agent_pos, hint=self._seg_hint)
+                if proj is None:
+                    proj = self.track.project(agent_pos, hint=self._seg_hint)
                 frame = self.process_obs(obs, s=proj.s)
                 # float32 round-trip: the same value the observation frame holds.
                 velocity = float(np.float32(obs["linear_vels_x"][0]))
@@ -281,7 +296,7 @@ class F1TenthWrapper(gym.Wrapper):
                 termination = "lap_complete"
             elif stagnated:
                 termination = "stagnation"
-            elif c.max_episode_steps is not None and self.sim_steps >= c.max_episode_steps:
+            elif (c.max_episode_steps is not None and self.sim_steps >= c.max_episode_steps) or bool(env_done):
                 termination = "time_limit"
                 done = True
                 info["TimeLimit.truncated"] = True
@@ -308,6 +323,9 @@ class F1TenthWrapper(gym.Wrapper):
         if lap_time is not None:
             info["lap_time"] = lap_time
         return stacked, reward, done, info
+
+    def _sim_time(self) -> float:
+        return float(getattr(self.env.unwrapped, "current_time", self.sim_steps * 0.01))
 
     def _legacy_step(self, frame, raw_steer, agent_pos, env_done):
         c = self.config
