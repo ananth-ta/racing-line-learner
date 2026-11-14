@@ -18,7 +18,8 @@ Every step's ``info`` carries:
 
 * ``termination``: ``None`` or one of :data:`TERMINATIONS`;
 * ``raw_steering`` (the policy's command, radians) and ``steering`` (after
-  the EMA filter, what the simulator receives), plus ``speed_command``;
+  the EMA filter, what the simulator receives), plus ``speed_command`` and
+  the car's actual ``speed`` (m/s);
 * ``reward_terms``: the reward broken into named parts (summed over the
   repeated simulator steps);
 * ``current_waypoint_idx``, ``waypoint_cleared``, ``progress_reward``;
@@ -295,6 +296,7 @@ class F1TenthWrapper(gym.Wrapper):
         info["raw_steering"] = float(raw_steer)
         info["steering"] = float(steer)
         info["speed_command"] = float(speed)
+        info["speed"] = float(self.last_raw_obs["linear_vels_x"][0])
         info["reward_terms"] = terms
         info["episode_steps"] = self.episode_steps
         info["sim_steps"] = self.sim_steps

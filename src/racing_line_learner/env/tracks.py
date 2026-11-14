@@ -23,6 +23,10 @@ from ..config import REPO_ROOT
 
 _EPS = 1e-9
 
+#: Tyre-road friction coefficient of the simulated car (f110_gym ``mu``).
+SIM_FRICTION = 1.0489
+GRAVITY = 9.81
+
 
 @dataclass(frozen=True)
 class TrackSpec:
@@ -148,6 +152,18 @@ class Track:
             cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
             k[i] = 2.0 * cross / denom
         return k
+
+    def grip_speed_limit(self, mu: float = SIM_FRICTION, v_cap: float = 20.0) -> np.ndarray:
+        """Approximate cornering speed limit (m/s) at each waypoint, ``sqrt(mu * g / |curvature|)``.
+
+        A point-mass estimate on the stored racing line: the car can take a
+        wider line, so treat it as indicative, not exact. Capped at ``v_cap``
+        (the simulator's top speed) on straights.
+        """
+        k = np.abs(self.curvature())
+        with np.errstate(divide="ignore"):
+            v = np.sqrt(mu * GRAVITY / np.maximum(k, 1e-9))
+        return np.minimum(v, v_cap)
 
     def smoothed_curvature(self) -> np.ndarray:
         """Curvature averaged over each waypoint and its two neighbours (cached).
