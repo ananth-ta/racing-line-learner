@@ -49,13 +49,24 @@ def drive(model, env, pose=None, spawn_idx=None, max_policy_steps: int = 40000) 
     laps: List[float] = []
     line_speeds: List[float] = []
     was_running = bool(timer.running) if line_timing else True
+    # Official sector splits (reporting only), when the track defines its sector boundaries.
+    sectors = getattr(env.track, "sectors", None) if line_timing else None
+    bounds = [float(env.track.cum_s[w]) for w in sectors] if sectors else []
+    splits: List[List[float]] = []
+    marks: List[float] = []
     for _ in range(max_policy_steps):
         action, _ = model.predict(obs, deterministic=True)
         obs, _, done, info = env.step(action)
         speeds.append(info.get("speed", 0.0))
+        if bounds and timer.running and len(marks) < len(bounds) and timer.progress >= bounds[len(marks)]:
+            marks.append(env._sim_time() - timer.t_start)
         if "lap_time" in info:
             laps.append(info["lap_time"])
             line_speeds.append(info.get("speed", 0.0))
+            if bounds and len(marks) == len(bounds):
+                edges = [0.0] + marks + [info["lap_time"]]
+                splits.append([round(b - a, 3) for a, b in zip(edges, edges[1:])])
+            marks = []
         elif line_timing and timer.running and not was_running:   # clock started at the line (out-lap)
             line_speeds.append(info.get("speed", 0.0))
         if line_timing:
@@ -65,6 +76,7 @@ def drive(model, env, pose=None, spawn_idx=None, max_policy_steps: int = 40000) 
     return {
         "termination": info.get("termination"),
         "lap_times": [_r(t, 3) for t in laps],
+        "sector_splits": splits,
         "line_speeds": [_r(v) for v in line_speeds],
         "waypoint": info.get("current_waypoint_idx"),
         "mean_speed": _r(np.mean(speeds)) if speeds else None,

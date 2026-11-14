@@ -51,7 +51,7 @@ class TestCollector(unittest.TestCase):
         self.assertLess(top["grip_limit"], 6.0)    # tight hairpin
         self.assertAlmostEqual(r["speed"]["pinned_at_floor_share"], 1.0)
         self.assertAlmostEqual(r["speed"]["floor_limited_lap_time_s"], TRACK.length / 6.5, places=1)
-        self.assertEqual(len(r["segments"]), 15)
+        self.assertEqual(len(r["segments"]), len(TRACK.corner_segments()))
         self.assertAlmostEqual(sum(s["time_share"] for s in r["segments"]), 1.0, places=2)
         self.assertEqual(sum(s["collisions"] for s in r["segments"]), 9)
 

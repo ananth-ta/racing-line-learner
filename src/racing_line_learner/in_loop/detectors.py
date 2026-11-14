@@ -19,6 +19,30 @@ HEADROOM_MIN = 5.0               # m/s of unused grip on a segment to call it un
 STAGNATION_SHARE = 0.3
 SATURATION_SHARE = 0.5
 CORKSCREW_PROGRESS_FRACTION = 0.05   # progress reward per step below this fraction of the reward per step
+# Smoothness thresholds (deterministic driving, straights). A smooth driver corrects its steering at most a few
+# times a second, holds the line to within ~0.2 m and changes its speed command gradually. The baseline models
+# measure 8-10 reversals/s, 0.38-0.48 m drift and 0.5-1.4 m/s of command change per 0.04 s step.
+WEAVING_REVERSALS_PER_S = 4.0
+WEAVING_LATERAL_STD_M = 0.25
+THROTTLE_CHANGE_PER_STEP = 0.3       # m/s per policy step (7.5 m/s^2)
+INCONSISTENT_LINE_STD_M = 0.6        # lateral spread in a corner segment
+
+#: Which whitelisted levers (schema v2 keys; v1 keys in brackets where they differ) can address each finding.
+#: Used by the grounding check: a proposed change must cite a current finding whose lever set contains it.
+LEVERS = {
+    "crash_hotspot": ("overspeed_coef", "grip_margin", "spawn_corner_mix", "jitter_coef", "steering_penalty_w",
+                      "curriculum", "speed_floor", "target_speed"),
+    "floor_blocks_braking": ("speed_floor",),
+    "speed_pinned_at_floor": ("speed_floor", "time_cost", "progress_coef"),
+    "speed_pinned_at_max": ("overspeed_coef", "grip_margin", "time_cost"),
+    "stagnation_dominant": ("progress_coef", "time_cost", "ent_coef"),
+    "corkscrew": ("steering_penalty_w", "jitter_coef", "progress_coef"),
+    "steering_saturated": ("steering_penalty_w", "jitter_coef"),
+    "under_driven_segment": ("time_cost", "progress_coef", "lap_bonus", "grip_margin", "target_speed"),
+    "weaving": ("jitter_coef", "steering_penalty_w"),
+    "throttle_jitter": ("throttle_change_coef",),
+    "inconsistent_line": ("spawn_corner_mix", "jitter_coef", "curriculum"),
+}
 
 
 def _finding(fid: str, severity: str, message: str, waypoints=None, **facts) -> Dict[str, Any]:
@@ -94,10 +118,60 @@ def detect(report: Dict[str, Any]) -> List[Dict[str, Any]]:
     for share, s, headroom in sorted(under, key=lambda t: -t[0])[:3]:
         findings.append(_finding(
             "under_driven_segment", "medium",
-            f"waypoints {s['waypoints'][0]}-{s['waypoints'][1]} take {share:.0%} of the time at up to "
+            f"{s.get('name', 'segment')} (waypoints {s['waypoints'][0]}-{s['waypoints'][1]}) takes {share:.0%} of the time at up to "
             f"{s['max_speed']:.1f} m/s, though grip allows about {s['grip_limit_min']:.1f} m/s",
             s["waypoints"], time_share=share, max_speed=s["max_speed"], grip_limit=s["grip_limit_min"],
             headroom=round(headroom, 2)))
 
+    findings.extend(_smoothness_findings(report))
+
     order = {"high": 0, "medium": 1, "low": 2}
     return sorted(findings, key=lambda f: order[f["severity"]])
+
+
+def _smoothness_findings(report: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Weaving, throttle jitter and inconsistent lines, from the deterministic probe when it has them.
+
+    Training rollouts are stochastic, so their smoothness mostly measures exploration noise; the probe shows
+    how the policy actually drives. Falls back to the training numbers, saying so.
+    """
+    probe = report.get("probe") or {}
+    sm, segs, source = probe.get("smoothness"), probe.get("segments"), "deterministic probe"
+    if not sm:
+        sm, segs, source = report.get("smoothness"), report.get("segments"), "training rollouts (includes exploration noise)"
+    out: List[Dict[str, Any]] = []
+    if not sm:
+        return out
+    rev, lat = sm.get("steer_reversals_per_s"), sm.get("lateral_std_m")
+    if rev is not None and lat is not None and rev >= WEAVING_REVERSALS_PER_S and lat >= WEAVING_LATERAL_STD_M:
+        out.append(_finding(
+            "weaving", "medium",
+            f"on straights the steering reverses {rev:.1f} times per second and the car drifts {lat:.2f} m (std) "
+            f"around the racing line ({source})",
+            steer_reversals_per_s=rev, lateral_std_m=lat, lateral_range_m=sm.get("lateral_range_m"), source=source))
+    thr = sm.get("throttle_change_per_step")
+    if thr is not None and thr >= THROTTLE_CHANGE_PER_STEP:
+        out.append(_finding(
+            "throttle_jitter", "medium",
+            f"on straights the speed command changes by {thr:.2f} m/s per step on average and reverses "
+            f"{sm.get('throttle_reversals_per_s')} times per second ({source})",
+            throttle_change_per_step=thr, throttle_reversals_per_s=sm.get("throttle_reversals_per_s"), source=source))
+    wobbly = [sg for sg in (segs or []) if sg.get("is_corner") and (sg.get("lateral_std") or 0) >= INCONSISTENT_LINE_STD_M]
+    for sg in sorted(wobbly, key=lambda g: -g["lateral_std"])[:3]:
+        out.append(_finding(
+            "inconsistent_line", "medium",
+            f"through corner {sg.get('name', '')} (waypoints {sg['waypoints'][0]}-{sg['waypoints'][1]}) the car's line varies by "
+            f"{sg['lateral_std']:.2f} m (std) ({source})",
+            sg["waypoints"], lateral_std=sg["lateral_std"], source=source))
+    return out
+
+
+def allowed_levers(findings: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    """For each lever, the ids of current findings that justify changing it."""
+    out: Dict[str, List[str]] = {}
+    for f in findings:
+        for key in LEVERS.get(f["id"], ()):
+            out.setdefault(key, [])
+            if f["id"] not in out[key]:
+                out[key].append(f["id"])
+    return out

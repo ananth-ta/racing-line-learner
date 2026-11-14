@@ -15,18 +15,25 @@ adds the checks that depend on the *training state*:
   correction still takes about two windows. A key whose change was rolled
   back stays locked for ``rollback_cooldown_windows`` more windows.
 
-Both checks can be switched off (``max_step_fraction=None``,
-``cooldown_windows=0``) to run them as ablations.
+* **Grounding** (schema v2): every change must cite, in ``grounds``, at least
+  one finding present in the current telemetry report whose lever set
+  (:data:`racing_line_learner.in_loop.detectors.LEVERS`) contains that key.
+  This blocks changes justified by a hallucinated or irrelevant diagnosis.
+
+Each check can be switched off (``max_step_fraction=None``,
+``cooldown_windows=0``, ``require_grounding=False``) to run them as ablations.
 """
 
 from dataclasses import dataclass, field
 from typing import Dict, FrozenSet, List, Mapping, Optional
 
-from ..schema import WHITELIST, Recommendation
+from ..schema import WHITELISTS, Recommendation
+from .detectors import LEVERS
 
 #: Keys whose per-window movement is capped: the reward weights and the speed floor.
 CAPPED_KEYS: FrozenSet[str] = frozenset(
-    {"speed_floor", "target_speed", "progress_coef", "waypoint_bonus", "steering_penalty_w", "jitter_coef"}
+    {"speed_floor", "target_speed", "progress_coef", "waypoint_bonus", "steering_penalty_w", "jitter_coef",
+     "throttle_change_coef", "overspeed_coef", "grip_margin", "time_cost", "lap_bonus"}
 )
 
 #: Pseudo-keys used for cooldown bookkeeping of the non-scalar sections.
@@ -50,6 +57,7 @@ class ValidatorConfig:
     max_step_fraction: Optional[float] = 0.25
     cooldown_windows: int = 1
     rollback_cooldown_windows: int = 2
+    require_grounding: bool = True
 
     def __post_init__(self) -> None:
         if self.max_step_fraction is not None and not 0.0 < self.max_step_fraction <= 1.0:
@@ -82,11 +90,11 @@ class ValidationResult:
     errors: List[str] = field(default_factory=list)
 
 
-def max_step(key: str, config: ValidatorConfig) -> Optional[float]:
+def max_step(key: str, config: ValidatorConfig, version: int = 1) -> Optional[float]:
     """Largest allowed per-window move for ``key``, or ``None`` if uncapped."""
     if config.max_step_fraction is None or key not in CAPPED_KEYS:
         return None
-    spec = WHITELIST[key]
+    spec = WHITELISTS[version][key]
     return config.max_step_fraction * (spec.high - spec.low)
 
 
@@ -124,6 +132,7 @@ def validate_proposal(
     window: int,
     history: Optional[Mapping[str, KeyHistory]] = None,
     config: ValidatorConfig = ValidatorConfig(),
+    findings: Optional[List[Dict]] = None,
 ) -> ValidationResult:
     """Check a schema-valid proposal against the current training state.
 
@@ -133,6 +142,8 @@ def validate_proposal(
         window: Index of the window the proposal would be applied in.
         history: Most recent change per key (see :class:`KeyHistory`).
         config: Guardrail settings.
+        findings: The current report's detector findings. Required for the
+            grounding check on schema-v2 proposals (when ``require_grounding``).
 
     Returns:
         A :class:`ValidationResult`; ``errors`` lists every violation. A
@@ -145,7 +156,7 @@ def validate_proposal(
         if key not in current:
             errors.append(f"{key}: no current value supplied")
             continue
-        limit = max_step(key, config)
+        limit = max_step(key, config, rec.schema_version)
         delta = abs(new - current[key])
         if limit is not None and delta > limit + _EPS:
             errors.append(
@@ -163,9 +174,30 @@ def validate_proposal(
         if err:
             errors.append(err)
 
+    if rec.schema_version >= 2 and config.require_grounding and rec.changes:
+        errors.extend(grounding_errors(rec, findings))
+
     return ValidationResult(accepted=not errors, errors=errors)
 
 
-def default_values() -> Dict[str, float]:
+def grounding_errors(rec: Recommendation, findings: Optional[List[Dict]]) -> List[str]:
+    """Changes that are not justified by a current finding whose levers include them."""
+    if findings is None:
+        return ["grounding: no telemetry findings supplied to check the proposal against"]
+    present = {f["id"] for f in findings}
+    errors = []
+    for key in sorted(rec.changes):
+        cited = rec.grounds.get(key, ())
+        missing = [c for c in cited if c not in present]
+        if missing:
+            errors.append(f"{key}: cites findings not in the current report: {missing}")
+        valid = [c for c in cited if c in present and key in LEVERS.get(c, ())]
+        if not valid:
+            errors.append(f"{key}: no cited finding is addressed by this lever (cited {list(cited)}; "
+                          f"findings present: {sorted(present)})")
+    return errors
+
+
+def default_values(version: int = 1) -> Dict[str, float]:
     """Whitelist defaults, i.e. the values in force before any intervention."""
-    return {k: s.default for k, s in WHITELIST.items()}
+    return {k: s.default for k, s in WHITELISTS[version].items()}

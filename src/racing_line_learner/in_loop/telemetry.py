@@ -10,6 +10,10 @@ facts computed by code:
 * per track segment: time share (a proxy for sector time), speed against
   the grip limit, steering saturation, collisions;
 * how often the speed command is pinned at the floor or at the maximum;
+* smoothness on straights: steering reversals per second, side-to-side drift
+  around the racing line, throttle (speed-command) jitter;
+* per segment: how consistently the car holds its line (lateral spread) and the
+  mean time per pass (a sector-time proxy);
 * the reward broken into its terms, per step;
 * optionally a deterministic evaluation probe (lap completion and lap time
   from fixed start points).
@@ -30,7 +34,15 @@ from ..env.tracks import Track
 REPORTED_CONFIG = (
     "reward_mode", "speed_floor", "speed_max", "target_speed", "progress_coef", "waypoint_bonus",
     "steering_penalty_w", "jitter_coef", "time_cost", "lap_bonus", "terminal_penalty", "spawn_waypoints", "spawn_mix",
+    "throttle_change_coef", "overspeed_coef", "grip_margin", "spawn_random", "spawn_corner_mix",
 )
+
+#: |curvature| below this (radius > 50 m) counts as a straight for the smoothness metrics.
+STRAIGHT_KAPPA = 0.02
+#: A segment whose grip limit drops below this (m/s) counts as a corner segment.
+CORNER_GRIP = 12.0
+#: Changes smaller than this (rad, m/s) do not count as a reversal of direction.
+REVERSAL_DEADBAND = 1e-3
 
 
 def _r(x: Optional[float], nd: int = 2) -> Optional[float]:
@@ -45,16 +57,24 @@ class TelemetryCollector:
     :meth:`reset`.
     """
 
-    def __init__(self, track: Track, env_config: EnvConfig, n_segments: int = 15,
+    def __init__(self, track: Track, env_config: EnvConfig, segmentation: str = "corners", n_segments: int = 15,
                  max_hotspots: int = 5, saturation_threshold: float = 0.98, pinned_tolerance: float = 0.05):
+        """``segmentation="corners"`` (default) uses :meth:`Track.corner_segments` (one segment per corner complex or
+        straight); ``"equal"`` splits the waypoints into ``n_segments`` equal ranges."""
         self.track = track
         self.env_config = env_config
         self.n = track.n_waypoints
         self.grip = track.grip_speed_limit(v_cap=env_config.speed_max)
-        self.segments = track.segment_ranges(n_segments)
+        if segmentation == "corners":
+            self.segments = [dict(s) for s in track.corner_segments()]
+        elif segmentation == "equal":
+            self.segments = [{"name": f"Z{i + 1}", "kind": None, "waypoints": list(range(a, b))}
+                             for i, (a, b) in enumerate(track.segment_ranges(n_segments))]
+        else:
+            raise ValueError(f"segmentation must be 'corners' or 'equal', got {segmentation!r}")
         self._seg_of = np.zeros(self.n, dtype=int)
-        for s, (a, b) in enumerate(self.segments):
-            self._seg_of[a:b] = s
+        for s, seg in enumerate(self.segments):
+            self._seg_of[seg["waypoints"]] = s
         # Saturation is measured against the simulator's physical limit: legacy
         # commands beyond +/-0.4189 rad do nothing extra.
         self.steer_limit = min(env_config.steer_limit, SIM_STEER_LIMIT)
@@ -83,6 +103,17 @@ class TelemetryCollector:
         self.episode_cleared: List[int] = []
         self._ep_steps: Dict[int, int] = defaultdict(int)
         self._ep_cleared: Dict[int, int] = defaultdict(int)
+        # Smoothness (straights only) and line consistency (per segment).
+        self.straight_steps = 0
+        self.steer_reversals = 0
+        self.throttle_reversals = 0
+        self.throttle_change_sum = 0.0
+        self.lateral_straight: List[float] = []
+        self.seg_lat_sum = np.zeros(m)
+        self.seg_lat_sq = np.zeros(m)
+        self.seg_lat_n = np.zeros(m, dtype=int)
+        self.seg_passes = np.zeros(m, dtype=int)
+        self._prev: Dict[int, Dict[str, Any]] = defaultdict(dict)   # per env: last steer/cmd/signs/segment
 
     # ------------------------------------------------------------------ #
 
@@ -113,6 +144,8 @@ class TelemetryCollector:
             self.saturated += 1
             self.seg_saturated[seg] += 1
 
+        self._smoothness(info, env_index, seg)
+
         self._ep_steps[env_index] += 1
         if info.get("waypoint_cleared"):
             self._ep_cleared[env_index] += 1
@@ -125,6 +158,40 @@ class TelemetryCollector:
             self.term_at[term][wp] += 1
             self.episode_steps.append(self._ep_steps.pop(env_index, 0))
             self.episode_cleared.append(self._ep_cleared.pop(env_index, 0))
+            self._prev.pop(env_index, None)   # the next episode starts fresh
+
+    def _smoothness(self, info: Dict[str, Any], env_index: int, seg: int) -> None:
+        p = self._prev[env_index]
+        if p.get("seg") != seg:
+            self.seg_passes[seg] += 1
+            p["seg"] = seg
+        lat, kappa = info.get("lateral"), info.get("curvature")
+        if lat is not None:
+            self.seg_lat_sum[seg] += lat
+            self.seg_lat_sq[seg] += lat * lat
+            self.seg_lat_n[seg] += 1
+        straight = kappa is not None and abs(kappa) < STRAIGHT_KAPPA
+        if straight:
+            self.straight_steps += 1
+            if lat is not None:
+                self.lateral_straight.append(float(lat))
+        for key, signal in (("steer", info.get("steering")), ("cmd", info.get("speed_command"))):
+            if signal is None:
+                continue
+            signal = float(signal)
+            if key in p:
+                delta = signal - p[key]
+                if straight and key == "cmd":
+                    self.throttle_change_sum += abs(delta)
+                if abs(delta) > REVERSAL_DEADBAND:
+                    sign = 1 if delta > 0 else -1
+                    if straight and p.get(key + "_sign", sign) != sign:
+                        if key == "steer":
+                            self.steer_reversals += 1
+                        else:
+                            self.throttle_reversals += 1
+                    p[key + "_sign"] = sign
+            p[key] = signal
 
     # ------------------------------------------------------------------ #
 
@@ -160,6 +227,13 @@ class TelemetryCollector:
         # Clusters are found peak-first, but a broad cluster can outweigh a sharp one.
         return sorted(out, key=lambda h: -h["collisions"])
 
+    def _seg_lateral_std(self, s: int) -> Optional[float]:
+        n = self.seg_lat_n[s]
+        if n < 2:
+            return None
+        mean = self.seg_lat_sum[s] / n
+        return float(np.sqrt(max(self.seg_lat_sq[s] / n - mean * mean, 0.0)))
+
     def report(self, window: Optional[int] = None, timesteps: Optional[int] = None,
                probe: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """The window report: plain JSON-serialisable data, numbers rounded."""
@@ -171,17 +245,23 @@ class TelemetryCollector:
 
         segments = []
         collisions = self.term_at["collision"] if "collision" in self.term_at else np.zeros(self.n, dtype=int)
-        for s, (a, b) in enumerate(self.segments):
-            locs = range(a, b)
+        for s, seg in enumerate(self.segments):
+            locs = seg["waypoints"]
             segments.append({
-                "waypoints": [a, b - 1],
+                "name": seg["name"],
+                "waypoints": [locs[0], locs[-1]],
                 "time_share": _r(self.seg_steps[s] / steps, 3),
                 "mean_speed": _r(self._mean_speed_at(locs)),
                 "max_speed": _r(self.seg_speed_max[s]) if self.seg_steps[s] else None,
-                "grip_limit_min": _r(float(self.grip[a:b].min())),
+                "grip_limit_min": _r(float(self.grip[locs].min())),
                 "collisions": int(collisions[[(i + 1) % self.n for i in locs]].sum()),
                 "steer_saturation": _r(self.seg_saturated[s] / self.seg_steps[s]) if self.seg_steps[s] else None,
+                "is_corner": seg["kind"] == "corner" if seg["kind"] else bool(self.grip[locs].min() < CORNER_GRIP),
+                "lateral_std": _r(self._seg_lateral_std(s), 3),
+                "pass_time_s": _r(self.seg_steps[s] * dt / self.seg_passes[s]) if self.seg_passes[s] else None,
             })
+        straight_s = self.straight_steps * dt
+        lat = np.array(self.lateral_straight)
 
         laps = len(self.lap_times)
         report = {
@@ -211,6 +291,14 @@ class TelemetryCollector:
                 "floor_limited_lap_time_s": _r(self.track.length / c.speed_floor) if c.speed_floor > 0 else None,
             },
             "steering": {"saturation_share": _r(self.saturated / steps)},
+            "smoothness": {
+                "straight_share": _r(self.straight_steps / steps, 3),
+                "steer_reversals_per_s": _r(self.steer_reversals / straight_s) if straight_s else None,
+                "lateral_std_m": _r(lat.std(), 3) if lat.size > 1 else None,
+                "lateral_range_m": _r(np.percentile(lat, 95) - np.percentile(lat, 5), 2) if lat.size > 1 else None,
+                "throttle_change_per_step": _r(self.throttle_change_sum / self.straight_steps, 3) if self.straight_steps else None,
+                "throttle_reversals_per_s": _r(self.throttle_reversals / straight_s) if straight_s else None,
+            },
             "reward_per_step": {k: _r(v / steps, 4) for k, v in sorted(self.reward_terms.items())},
             "crash_hotspots": self.crash_hotspots(),
             "segments": segments,
@@ -242,6 +330,18 @@ def run_episodes(model, env, collector: Optional[TelemetryCollector], spawns: Se
         results.append({"spawn": spawn, "termination": info.get("termination"),
                         "lap_time": _r(info.get("lap_time")), "waypoint": info.get("current_waypoint_idx")})
     return results
+
+
+def probe_with_smoothness(model, env, track: Track, env_config: EnvConfig,
+                          spawns: Sequence[Optional[int]]) -> Dict[str, Any]:
+    """Deterministic probe episodes, summarised, with smoothness and per-segment line spread attached."""
+    collector = TelemetryCollector(track, env_config)
+    probe = summarize_probe(run_episodes(model, env, collector, spawns, deterministic=True))
+    rep = collector.report()
+    probe["smoothness"] = rep["smoothness"]
+    probe["segments"] = [{k: seg[k] for k in ("name", "waypoints", "is_corner", "lateral_std", "pass_time_s")}
+                         for seg in rep["segments"]]
+    return probe
 
 
 def summarize_probe(results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:

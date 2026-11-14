@@ -47,7 +47,7 @@ class TestStepCap(unittest.TestCase):
         self.assertIn("exceeds per-window cap", res.errors[0])
 
     def test_every_capped_key_enforced_both_directions(self):
-        for key in CAPPED_KEYS:
+        for key in sorted(CAPPED_KEYS & set(WHITELIST)):
             spec = WHITELIST[key]
             limit = max_step(key, ValidatorConfig())
             for target in (spec.low, spec.high):

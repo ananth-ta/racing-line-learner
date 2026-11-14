@@ -107,6 +107,9 @@ class EnvConfig:
     # --- laptime mode only ---
     time_cost: float = 0.0             # subtracted every step
     lap_bonus: float = 0.0             # added on lap completion
+    throttle_change_coef: float = 0.0  # penalty per m/s of speed-command change between policy steps (0 = off)
+    overspeed_coef: float = 0.0        # penalty on (speed - grip_margin * grip limit)^2 when positive (0 = off)
+    grip_margin: float = 1.0           # fraction of the curvature-based grip limit the overspeed term allows
 
     # --- Legacy quirk switches (only read in legacy mode) ---
     legacy_speed_from_yaw_rate: bool = True
@@ -122,6 +125,8 @@ class EnvConfig:
     spawn_waypoints: Tuple[int, ...] = ()
     spawn_mix: float = 0.0             # fraction of resets that spawn at a random spawn_waypoint
     spawn_random: float = 0.0          # fraction of resets that spawn at a uniformly random waypoint
+    spawn_corner_mix: float = 0.0      # fraction of resets that spawn just before one of the tightest corners
+    spawn_corner_k: int = 5            # how many of the tightest corners corner practice uses
 
     def __post_init__(self) -> None:
         errors = []
@@ -149,6 +154,14 @@ class EnvConfig:
             errors.append(f"spawn_mix must be in [0, 1], got {self.spawn_mix}")
         if not 0.0 <= self.spawn_random <= 1.0:
             errors.append(f"spawn_random must be in [0, 1], got {self.spawn_random}")
+        if not 0.0 <= self.spawn_corner_mix <= 1.0 or self.spawn_corner_k < 1:
+            errors.append("spawn_corner_mix must be in [0, 1] and spawn_corner_k >= 1")
+        if self.throttle_change_coef < 0.0 or self.overspeed_coef < 0.0:
+            errors.append("throttle_change_coef and overspeed_coef must be >= 0")
+        if not 0.5 <= self.grip_margin <= 2.0:
+            errors.append(f"grip_margin must be in [0.5, 2.0], got {self.grip_margin}")
+        if self.reward_mode == "legacy" and (self.throttle_change_coef or self.overspeed_coef):
+            errors.append("throttle_change_coef / overspeed_coef are laptime-mode reward terms")
         if self.spawn_mix > 0.0 and not self.spawn_waypoints:
             errors.append("spawn_mix > 0 requires spawn_waypoints")
         if any(not isinstance(i, int) or isinstance(i, bool) or i < 0 for i in self.spawn_waypoints):

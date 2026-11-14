@@ -76,8 +76,30 @@ WHITELIST: Dict[str, ParamSpec] = {
     "ent_coef": ParamSpec(default=0.01, low=0.001, high=0.05),
 }
 
+#: Version 2 (in-loop arm, v2 preset): track-independent levers only. Defaults mirror the ``v2`` preset.
+#: No waypoint-indexed sections (``curriculum``, ``speed_plan``): corner practice is ``spawn_corner_mix``.
+#: Every change must name the detector findings that justify it (``grounds``), checked by the in-loop validator.
+WHITELIST_V2: Dict[str, ParamSpec] = {
+    "progress_coef": ParamSpec(default=10.0, low=5.0, high=20.0),
+    "waypoint_bonus": ParamSpec(default=50.0, low=20.0, high=100.0),
+    "steering_penalty_w": ParamSpec(default=2.0, low=0.5, high=3.0),
+    "jitter_coef": ParamSpec(default=0.05, low=0.01, high=0.5),
+    "throttle_change_coef": ParamSpec(default=0.0, low=0.0, high=0.5),
+    "overspeed_coef": ParamSpec(default=0.0, low=0.0, high=2.0),
+    "grip_margin": ParamSpec(default=1.0, low=0.8, high=1.5),
+    "time_cost": ParamSpec(default=0.1, low=0.02, high=0.3),
+    "lap_bonus": ParamSpec(default=100.0, low=0.0, high=300.0),
+    "ent_coef": ParamSpec(default=0.01, low=0.001, high=0.05),
+    "spawn_random": ParamSpec(default=0.75, low=0.0, high=0.9),
+    "spawn_corner_mix": ParamSpec(default=0.0, low=0.0, high=0.5),
+}
+
+WHITELISTS: Dict[int, Dict[str, ParamSpec]] = {1: WHITELIST, 2: WHITELIST_V2}
+SUPPORTED_VERSIONS = tuple(sorted(WHITELISTS))
+
 _TOP_LEVEL_REQUIRED = ("schema_version", "source_model", "track")
 _TOP_LEVEL_OPTIONAL = ("diagnoses", "changes", "curriculum", "speed_plan", "rationale")
+_TOP_LEVEL_OPTIONAL_V2 = ("diagnoses", "changes", "grounds", "rationale")
 _DIAGNOSIS_REQUIRED = ("waypoints", "cause")
 _DIAGNOSIS_OPTIONAL = ("evidence", "verified")
 _CURRICULUM_KEYS = ("spawn_waypoints", "spawn_mix")
@@ -138,6 +160,8 @@ class Recommendation:
     diagnoses: Tuple[Diagnosis, ...] = ()
     rationale: str = ""
     schema_version: int = SCHEMA_VERSION
+    #: v2 only: for each changed key, the ids of the detector findings it addresses.
+    grounds: Dict[str, Tuple[str, ...]] = field(default_factory=dict)
 
     @property
     def n_changes(self) -> int:
@@ -150,16 +174,20 @@ class Recommendation:
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize back to the on-disk JSON layout (speed_plan keys as strings)."""
-        return {
+        out = {
             "schema_version": self.schema_version,
             "source_model": self.source_model,
             "track": self.track,
             "diagnoses": [d.to_dict() for d in self.diagnoses],
             "changes": dict(self.changes),
-            "curriculum": self.curriculum.to_dict(),
-            "speed_plan": {str(k): v for k, v in sorted(self.speed_plan.items())},
             "rationale": self.rationale,
         }
+        if self.schema_version >= 2:
+            out["grounds"] = {k: list(v) for k, v in self.grounds.items()}
+        else:
+            out["curriculum"] = self.curriculum.to_dict()
+            out["speed_plan"] = {str(k): v for k, v in sorted(self.speed_plan.items())}
+        return out
 
 
 def count_changes(
@@ -218,16 +246,17 @@ def _check_keys(
 # Section parsers
 # --------------------------------------------------------------------------- #
 
-def _parse_changes(raw: Any, errors: List[str]) -> Dict[str, float]:
+def _parse_changes(raw: Any, errors: List[str], whitelist: Optional[Dict[str, ParamSpec]] = None) -> Dict[str, float]:
+    whitelist = WHITELIST if whitelist is None else whitelist
     if not isinstance(raw, dict):
         errors.append(f"changes: expected an object, got {type(raw).__name__}")
         return {}
     out: Dict[str, float] = {}
     for key, value in raw.items():
         path = f"changes.{key}"
-        spec = WHITELIST.get(key)
+        spec = whitelist.get(key)
         if spec is None:
-            errors.append(f"{path}: not a tunable parameter (allowed: {', '.join(sorted(WHITELIST))})")
+            errors.append(f"{path}: not a tunable parameter (allowed: {', '.join(sorted(whitelist))})")
             continue
         number = _check_number(value, path, errors)
         if number is None:
@@ -387,11 +416,13 @@ def parse_recommendation(
         raise SchemaError([f"<root>: expected an object, got {type(data).__name__}"])
 
     errors: List[str] = []
-    _check_keys(data, _TOP_LEVEL_REQUIRED, _TOP_LEVEL_OPTIONAL, "", errors)
-
     version = data.get("schema_version")
-    if "schema_version" in data and (not _is_int(version) or version != SCHEMA_VERSION):
-        errors.append(f"schema_version: unsupported version {version!r} (expected {SCHEMA_VERSION})")
+    if "schema_version" in data and (not _is_int(version) or version not in SUPPORTED_VERSIONS):
+        errors.append(f"schema_version: unsupported version {version!r} (expected one of {SUPPORTED_VERSIONS})")
+        version = SCHEMA_VERSION
+    version = version if _is_int(version) and version in SUPPORTED_VERSIONS else SCHEMA_VERSION
+    optional = _TOP_LEVEL_OPTIONAL_V2 if version >= 2 else _TOP_LEVEL_OPTIONAL
+    _check_keys(data, _TOP_LEVEL_REQUIRED, optional, "", errors)
 
     strings = {}
     for key in ("source_model", "track"):
@@ -402,7 +433,7 @@ def parse_recommendation(
     if expected_track is not None and strings["track"] and strings["track"] != expected_track:
         errors.append(f"track: recommendation is for {strings['track']!r}, expected {expected_track!r}")
 
-    changes = _parse_changes(data.get("changes", {}), errors)
+    changes = _parse_changes(data.get("changes", {}), errors, WHITELISTS[version])
 
     floor = changes.get("speed_floor")
     if floor is None:
@@ -410,6 +441,7 @@ def parse_recommendation(
 
     curriculum = _parse_curriculum(data.get("curriculum", {}), n_waypoints, errors)
     speed_plan = _parse_speed_plan(data.get("speed_plan", {}), n_waypoints, floor, errors)
+    grounds = _parse_grounds(data.get("grounds", {}), changes, errors) if version >= 2 else {}
     diagnoses = _parse_diagnoses(data.get("diagnoses", []), n_waypoints, errors)
 
     rationale = data.get("rationale", "")
@@ -434,7 +466,29 @@ def parse_recommendation(
         speed_plan=speed_plan,
         diagnoses=diagnoses,
         rationale=rationale,
+        schema_version=version,
+        grounds=grounds,
     )
+
+
+def _parse_grounds(raw: Any, changes: Mapping[str, float], errors: List[str]) -> Dict[str, Tuple[str, ...]]:
+    """v2: every changed key must cite at least one finding id; no grounds for keys that are not changed."""
+    if not isinstance(raw, dict):
+        errors.append(f"grounds: expected an object, got {type(raw).__name__}")
+        return {}
+    out: Dict[str, Tuple[str, ...]] = {}
+    for key, ids in raw.items():
+        if key not in changes:
+            errors.append(f"grounds.{key}: not one of the proposed changes")
+            continue
+        if not (isinstance(ids, list) and ids and all(isinstance(i, str) and i.strip() for i in ids)):
+            errors.append(f"grounds.{key}: expected a non-empty list of finding ids")
+            continue
+        out[key] = tuple(i.strip() for i in ids)
+    for key in changes:
+        if key not in raw:
+            errors.append(f"grounds.{key}: every change must cite the findings that justify it")
+    return out
 
 
 def load_recommendation(path: str, n_waypoints: int, **kwargs: Any) -> Recommendation:
@@ -454,64 +508,67 @@ def dump_recommendation(rec: Recommendation, path: str) -> None:
         f.write("\n")
 
 
-def recommendation_json_schema(n_waypoints: int, max_changes: int = DEFAULT_MAX_CHANGES) -> Dict[str, Any]:
-    """JSON Schema for constrained LLM decoding (llama.cpp / vLLM guided JSON).
+def recommendation_json_schema(n_waypoints: int, max_changes: int = DEFAULT_MAX_CHANGES,
+                               version: int = SCHEMA_VERSION) -> Dict[str, Any]:
+    """JSON Schema for constrained LLM decoding (llama.cpp / vLLM / Ollama structured output).
 
     It encodes types, key whitelists and static ranges. Cross-field rules
-    (the change cap, ``speed_plan`` vs. a changed ``speed_floor``,
-    spawn_mix/spawn_waypoints consistency) cannot be expressed here, so
-    output must still go through :func:`parse_recommendation`.
+    (the change cap, grounds covering every change, ``speed_plan`` vs. a
+    changed ``speed_floor``, spawn_mix/spawn_waypoints consistency) cannot be
+    expressed here, so output must still go through :func:`parse_recommendation`.
     """
+    if version not in SUPPORTED_VERSIONS:
+        raise ValueError(f"unsupported schema version {version}")
+    whitelist = WHITELISTS[version]
     last = n_waypoints - 1
     waypoint = {"type": "integer", "minimum": 0, "maximum": last}
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": list(_TOP_LEVEL_REQUIRED),
-        "properties": {
-            "schema_version": {"type": "integer", "enum": [SCHEMA_VERSION]},
-            "source_model": {"type": "string", "minLength": 1},
-            "track": {"type": "string", "minLength": 1},
-            "diagnoses": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": list(_DIAGNOSIS_REQUIRED),
-                    "properties": {
-                        "waypoints": {"type": "array", "items": waypoint, "minItems": 2, "maxItems": 2},
-                        "cause": {"type": "string", "minLength": 1},
-                        "evidence": {"type": "object", "additionalProperties": {"type": "number"}},
-                        "verified": {"type": "boolean"},
-                    },
-                },
-            },
-            "changes": {
+    props: Dict[str, Any] = {
+        "schema_version": {"type": "integer", "enum": [version]},
+        "source_model": {"type": "string", "minLength": 1},
+        "track": {"type": "string", "minLength": 1},
+        "diagnoses": {
+            "type": "array",
+            "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "maxProperties": max_changes,
+                "required": list(_DIAGNOSIS_REQUIRED),
                 "properties": {
-                    k: {"type": "number", "minimum": s.low, "maximum": s.high}
-                    for k, s in WHITELIST.items()
+                    "waypoints": {"type": "array", "items": waypoint, "minItems": 2, "maxItems": 2},
+                    "cause": {"type": "string", "minLength": 1},
+                    "evidence": {"type": "object", "additionalProperties": {"type": "number"}},
+                    "verified": {"type": "boolean"},
                 },
             },
-            "curriculum": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "spawn_waypoints": {"type": "array", "items": waypoint, "uniqueItems": True},
-                    "spawn_mix": {"type": "number", "minimum": 0.0, "maximum": SPAWN_MIX_MAX},
-                },
-            },
-            "speed_plan": {
-                "type": "object",
-                "propertyNames": {"pattern": "^[0-9]+$"},
-                "additionalProperties": {
-                    "type": "number",
-                    "minimum": WHITELIST["speed_floor"].low,
-                    "maximum": SPEED_PLAN_MAX,
-                },
-            },
-            "rationale": {"type": "string", "maxLength": RATIONALE_MAX_CHARS},
         },
+        "changes": {
+            "type": "object",
+            "additionalProperties": False,
+            "maxProperties": max_changes,
+            "properties": {k: {"type": "number", "minimum": sp.low, "maximum": sp.high} for k, sp in whitelist.items()},
+        },
+        "rationale": {"type": "string", "maxLength": RATIONALE_MAX_CHARS},
     }
+    required = list(_TOP_LEVEL_REQUIRED)
+    if version >= 2:
+        props["grounds"] = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {k: {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}
+                           for k in whitelist},
+        }
+        required.append("grounds")
+    else:
+        props["curriculum"] = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "spawn_waypoints": {"type": "array", "items": waypoint, "uniqueItems": True},
+                "spawn_mix": {"type": "number", "minimum": 0.0, "maximum": SPAWN_MIX_MAX},
+            },
+        }
+        props["speed_plan"] = {
+            "type": "object",
+            "propertyNames": {"pattern": "^[0-9]+$"},
+            "additionalProperties": {"type": "number", "minimum": WHITELIST["speed_floor"].low, "maximum": SPEED_PLAN_MAX},
+        }
+    return {"type": "object", "additionalProperties": False, "required": required, "properties": props}

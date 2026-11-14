@@ -40,6 +40,9 @@ class TrackSpec:
     start_pose: Optional[Tuple[float, float, float]] = None
     #: Out-lap start waypoint; ``None`` = derived from geometry (:meth:`Track.outlap_start_waypoint`).
     outlap_start: Optional[int] = None
+    #: Official timing sectors, for reporting only: the waypoints where sector 1 and sector 2 end (sector 3 ends
+    #: at the start/finish line). Placed by hand from circuit maps, so approximate; ``None`` = not set.
+    sectors: Optional[Tuple[int, int]] = None
 
 
 #: Known tracks. ``cota`` is Circuit of the Americas (Austin). Its files were
@@ -94,7 +97,8 @@ class Track:
     """A loaded track: map location plus closed racing-line geometry."""
 
     def __init__(self, name: str, map_path: Path, map_ext: str, waypoints: np.ndarray,
-                 start_pose: Optional[Tuple[float, float, float]] = None, outlap_start: Optional[int] = None):
+                 start_pose: Optional[Tuple[float, float, float]] = None, outlap_start: Optional[int] = None,
+                 sectors: Optional[Tuple[int, int]] = None):
         wp = np.asarray(waypoints, dtype=np.float64)
         if wp.ndim != 2 or wp.shape[1] != 2 or len(wp) < 3:
             raise ValueError("waypoints must be an (N>=3, 2) array")
@@ -105,6 +109,9 @@ class Track:
         self.n_waypoints = len(wp)
         self._start_pose = start_pose
         self._outlap_start = outlap_start
+        if sectors is not None and not 0 < sectors[0] < sectors[1] < len(wp):
+            raise ValueError(f"sectors must be 0 < s1_end < s2_end < {len(wp)}, got {sectors}")
+        self.sectors = tuple(sectors) if sectors is not None else None
 
         # Segment i runs from waypoint i to waypoint i+1 (the last one closes the loop).
         self.seg_vec = np.roll(wp, -1, axis=0) - wp
@@ -209,6 +216,88 @@ class Track:
             v = np.sqrt(mu * GRAVITY / np.maximum(k, 1e-9))
         return np.minimum(v, v_cap)
 
+    def grip_speed_at(self, s, mu: float = SIM_FRICTION, v_cap: float = 20.0):
+        """Grip-limited speed at arc length(s) ``s``, from the smoothed curvature (see :meth:`grip_speed_limit`)."""
+        k = np.abs(self.curvature_at(s))
+        return np.minimum(np.sqrt(mu * GRAVITY / np.maximum(k, 1e-9)), v_cap)
+
+    def corner_approach_waypoints(self, k: int = 5, lead_m: float = 10.0, min_gap: int = 5) -> Tuple[int, ...]:
+        """Spawn points ``lead_m`` metres before the ``k`` tightest corners (track-independent corner practice).
+
+        Corners are local minima of the grip limit, at least ``min_gap``
+        waypoints apart, tightest first.
+        """
+        grip = self.grip_speed_limit()
+        n = self.n_waypoints
+        order = np.argsort(grip)
+        apexes: list = []
+        for i in order:
+            if len(apexes) == k:
+                break
+            if all(min((i - a) % n, (a - i) % n) >= min_gap for a in apexes):
+                apexes.append(int(i))
+        out = []
+        for a in apexes:
+            target = (self.cum_s[a] - lead_m) % self.length
+            out.append(int(np.searchsorted(self.cum_s, target, side="right") - 1) % n)
+        return tuple(out)
+
+    def corner_segments(self, corner_grip: float = 12.0, min_straight: int = 3) -> Tuple[Dict[str, object], ...]:
+        """Split the lap into corner complexes and straights, from the racing line's curvature.
+
+        A waypoint is in a corner when the grip limit from the *smoothed*
+        curvature is below ``corner_grip`` m/s. Straights shorter than
+        ``min_straight`` waypoints are folded into the corners around them, so
+        a chicane or esses stay one complex. Returns segments in lap order from
+        the start/finish line, each ``{"name", "kind", "waypoints"}`` with
+        ``waypoints`` a list of indices (a segment may wrap past index 0).
+        Automatic and track-independent: no hand-placed boundaries.
+        """
+        n = self.n_waypoints
+        k = np.abs(self.smoothed_curvature())
+        grip = np.sqrt(SIM_FRICTION * GRAVITY / np.maximum(k, 1e-9))
+        corner = grip < corner_grip
+        if corner.all() or not corner.any():
+            return ({"name": "C1" if corner.all() else "S1", "kind": "corner" if corner.all() else "straight",
+                     "waypoints": list(range(n))},)
+        # Fold short straights into the neighbouring corners (circularly).
+        changed = True
+        while changed:
+            changed = False
+            i = 0
+            while i < n:
+                if not corner[i] and corner[(i - 1) % n]:
+                    j = i
+                    while not corner[j % n] and j - i < n:
+                        j += 1
+                    if j - i < min_straight:
+                        for m in range(i, j):
+                            corner[m % n] = True
+                        changed = True
+                    i = j
+                else:
+                    i += 1
+        # Runs, starting at the first boundary after the line so no run is split at index 0 unless it must wrap.
+        start = next(i for i in range(n) if corner[i] != corner[(i - 1) % n])
+        runs, cur = [], [start]
+        for o in range(1, n):
+            i = (start + o) % n
+            if corner[i] == corner[cur[-1]]:
+                cur.append(i)
+            else:
+                runs.append(cur); cur = [i]
+        runs.append(cur)
+        # Order from the start/finish line: the run containing waypoint 0 first.
+        first = next(r for r, run in enumerate(runs) if 0 in run)
+        runs = runs[first:] + runs[:first]
+        out, nc, ns = [], 0, 0
+        for run in runs:
+            if corner[run[0]]:
+                nc += 1; out.append({"name": f"C{nc}", "kind": "corner", "waypoints": run})
+            else:
+                ns += 1; out.append({"name": f"S{ns}", "kind": "straight", "waypoints": run})
+        return tuple(out)
+
     def smoothed_curvature(self) -> np.ndarray:
         """Curvature averaged over each waypoint and its two neighbours (cached).
 
@@ -302,4 +391,4 @@ def load_track(track: Union[str, TrackSpec]) -> Track:
         if not Path(str(map_path) + ext).exists():
             raise FileNotFoundError(f"track {spec.name!r}: missing {map_path}{ext}")
     return Track(spec.name, map_path, spec.map_ext, load_waypoints_csv(_resolve(spec.waypoints_csv)), spec.start_pose,
-                 spec.outlap_start)
+                 spec.outlap_start, spec.sectors)

@@ -56,7 +56,13 @@ def main(argv: Optional[Sequence[str]] = None) -> dict:
     run_episodes(model, env, collector, spawns, deterministic=False)
 
     probe_spawns = [None] + [int(i) for i in np.linspace(0, n, args.probe, endpoint=False)[1:]]
-    probe = summarize_probe(run_episodes(model, env, None, probe_spawns, deterministic=True))
+    # Smoothness is measured on the deterministic probe: training rollouts mostly show exploration noise.
+    probe_collector = TelemetryCollector(env.track, config)
+    probe = summarize_probe(run_episodes(model, env, probe_collector, probe_spawns, deterministic=True))
+    probe_report = probe_collector.report()
+    probe["smoothness"] = probe_report["smoothness"]
+    probe["segments"] = [{k: seg[k] for k in ("name", "waypoints", "is_corner", "lateral_std", "pass_time_s")}
+                         for seg in probe_report["segments"]]
     env.close()
 
     report = collector.report(probe=probe)

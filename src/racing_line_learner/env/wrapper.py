@@ -132,12 +132,16 @@ class F1TenthWrapper(gym.Wrapper):
         self._lap_start_time = 0.0
         self._s = None                 # laptime: arc length at previous step
         self._seg_hint = None
+        self._info_hint = None         # projection hint for info fields in legacy mode
+        self.prev_speed_cmd = None     # speed command at the previous policy step
 
     def choose_spawn(self) -> Optional[int]:
         """Spawn waypoint for the next episode under the curriculum, or ``None`` for the default start."""
         c = self.config
         # Each check draws from the RNG only when enabled, so configs without
         # random starts keep their exact spawn sequence.
+        if c.spawn_corner_mix > 0.0 and self._rng.rand() < c.spawn_corner_mix:
+            return int(self._rng.choice(self.track.corner_approach_waypoints(c.spawn_corner_k)))
         if c.spawn_random > 0.0 and self._rng.rand() < c.spawn_random:
             return int(self._rng.randint(self.track.n_waypoints))
         if c.spawn_mix > 0.0 and c.spawn_waypoints and self._rng.rand() < c.spawn_mix:
@@ -239,8 +243,11 @@ class F1TenthWrapper(gym.Wrapper):
         done = False
         info = {}
         frame = None
+        last_proj = None
+        # Throttle change is charged once per policy step (the command is held for the repeat).
+        throttle_change = 0.0 if self.prev_speed_cmd is None else abs(float(speed) - float(self.prev_speed_cmd))
 
-        for _ in range(c.action_repeat):
+        for sub in range(c.action_repeat):
             obs, _, env_done, info = self.env.step(np.array([[steer, speed]]))
             self.last_raw_obs = obs
             self.sim_steps += 1
@@ -286,8 +293,10 @@ class F1TenthWrapper(gym.Wrapper):
                 # float32 round-trip: the same value the observation frame holds.
                 velocity = float(np.float32(obs["linear_vels_x"][0]))
                 r, t, clr, pr, stagnated = self._laptime_step(
-                    proj, velocity, raw_steer, collision, lap_complete, lap_event
+                    proj, velocity, raw_steer, collision, lap_complete, lap_event,
+                    throttle_change if sub == 0 else 0.0,
                 )
+                last_proj = proj
             self.prev_steering = raw_steer
 
             reward += r
@@ -311,6 +320,7 @@ class F1TenthWrapper(gym.Wrapper):
                 break
 
         self.episode_steps += 1
+        self.prev_speed_cmd = speed
         self.frames.append(frame)
         stacked = self._get_stacked_obs()
 
@@ -322,6 +332,13 @@ class F1TenthWrapper(gym.Wrapper):
         info["steering"] = float(steer)
         info["speed_command"] = float(speed)
         info["speed"] = float(self.last_raw_obs["linear_vels_x"][0])
+        # Position relative to the racing line, for telemetry (legacy mode projects here only for info).
+        if last_proj is None:
+            o = self.last_raw_obs
+            last_proj = self.track.project((o["poses_x"][0], o["poses_y"][0]), hint=self._info_hint)
+            self._info_hint = last_proj.segment
+        info["lateral"] = last_proj.lateral
+        info["curvature"] = float(self.track.curvature_at(last_proj.s))
         info["reward_terms"] = terms
         info["episode_steps"] = self.episode_steps
         info["sim_steps"] = self.sim_steps
@@ -370,7 +387,7 @@ class F1TenthWrapper(gym.Wrapper):
         )
         return reward, terms, cleared, progress_reward, stagnated
 
-    def _laptime_step(self, proj, velocity, raw_steer, collision, lap_complete, lap_event):
+    def _laptime_step(self, proj, velocity, raw_steer, collision, lap_complete, lap_event, throttle_change=0.0):
         c = self.config
         track = self.track
         progress_m = track.progress_delta(self._s, proj.s)
@@ -400,6 +417,9 @@ class F1TenthWrapper(gym.Wrapper):
             collision=collision,
             stagnated=stagnated,
             lap_complete=lap_event,
+            throttle_change=throttle_change,
+            overspeed=(max(0.0, velocity - c.grip_margin * float(track.grip_speed_at(proj.s, v_cap=c.speed_max)))
+                       if c.overspeed_coef else 0.0),
         )
         return reward, terms, cleared_count > 0, terms["progress"], stagnated
 

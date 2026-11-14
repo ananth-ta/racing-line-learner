@@ -79,6 +79,8 @@ def laptime_reward(
     collision: bool,
     stagnated: bool,
     lap_complete: bool,
+    throttle_change: float = 0.0,
+    overspeed: float = 0.0,
 ) -> Tuple[float, Dict[str, float]]:
     """Lap-time reward: paid for progress along the line, charged for time.
 
@@ -90,6 +92,9 @@ def laptime_reward(
         velocity: Actual longitudinal velocity (m/s).
         progress_m: Signed arc-length progress along the racing line this step (m).
         waypoints_cleared: Waypoints passed this step (forward only).
+        throttle_change: |speed command - previous speed command| (m/s), on the
+            first simulator step of a policy step, else 0.
+        overspeed: Speed above ``grip_margin`` x the grip limit here (m/s), >= 0.
     """
     terms = {
         "progress": config.progress_coef * progress_m,
@@ -98,6 +103,8 @@ def laptime_reward(
         "time": -config.time_cost,
         "steering": -(raw_steer ** 2) * config.steering_penalty_w,
         "jitter": -abs(raw_steer - prev_raw_steer) * config.jitter_coef,
+        "throttle": -config.throttle_change_coef * throttle_change,
+        "overspeed": -config.overspeed_coef * overspeed * overspeed,
         "terminal": 0.0,
         "lap": 0.0,
     }

@@ -174,3 +174,22 @@ class TestLineTimingInSimulator(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@requires_sim
+class TestSectorSplits(unittest.TestCase):
+    def test_splits_sum_to_lap_time(self):
+        """A dummy policy on a track with (temporary) sectors: completed laps report 3 splits summing to the lap."""
+        from racing_line_learner.env.tracks import Track
+        from racing_line_learner.env.wrapper import make_env
+        from racing_line_learner.eval.laps import drive, eval_config
+        base = load_track("cota")
+        t = Track("cota", base.map_path, base.map_ext, base.waypoints, base.start_pose if base.has_custom_start else None,
+                  sectors=(2, 4))
+        env = make_env(t, replace(eval_config(get_preset("v2"), "line", laps=1), max_episode_steps=200))
+        self.addCleanup(env.close)
+        run = drive(HeadingDriver(env.obs_dim), env, pose=t.spawn_pose(t.n_waypoints - 3))
+        self.assertIn("sector_splits", run)
+        for lap, sp in zip(run["lap_times"], run["sector_splits"]):
+            self.assertEqual(len(sp), 3)
+            self.assertAlmostEqual(sum(sp), lap, places=2)

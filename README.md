@@ -18,8 +18,13 @@ src/racing_line_learner/
   env/tracks.py      track registry, racing-line geometry (arc length, curvature, projection, spawn poses)
   env/rewards.py     reward functions (legacy, laptime), pure and unit-tested
   env/wrapper.py     F1TenthWrapper: observations, action mapping, termination, spawn curriculum
+  env/laps.py        start/finish line lap timer (flying laps, standing starts)
   train/ppo.py       resumable PPO training entry point
-  in_loop/validator.py  per-window step cap and cooldown guardrails for in-loop proposals
+  eval/laps.py       lap-time evaluation protocol (flying, out-lap, standing, robustness)
+  in_loop/telemetry.py  window telemetry: crashes, segments, speed vs grip, smoothness, reward breakdown
+  in_loop/detectors.py  deterministic findings + which levers address each finding
+  in_loop/validator.py  guardrails for proposals: step cap, cooldowns, grounding
+  in_loop/analyze.py    offline telemetry report for a saved model
 scripts/             Colab launchers (setup, run)
 tests/               unit tests (simulator tests skip if f110_gym is not installed)
 maps/                maps and racing lines (cota = Circuit of the Americas)
@@ -85,6 +90,43 @@ obs = env.reset(spawn_idx=100)            # spawn at waypoint 100, facing along 
 obs, reward, done, info = env.step([0.0, 8.0])
 info["termination"], info["reward_terms"]   # None | collision | stagnation | lap_complete | time_limit
 ```
+
+Evaluate a model's lap times (two-lap flying lap as the headline, plus out-lap, standing-start and 16-start robustness modes, each with jittered repeats):
+
+```bash
+python -m racing_line_learner.eval --model path/to/model.zip --preset v2 --tracks cota sepang_wide sepang
+```
+
+## In-loop telemetry and levers
+
+`python -m racing_line_learner.in_loop.analyze --model path/to/model.zip --preset v2` prints the report the in-loop
+supervisor reads, with its deterministic findings, for example:
+
+```
+[high]   67% of collisions occur at waypoints 35-35; approach speed 9.4 m/s exceeds the corner's grip limit of about 7.4 m/s
+[medium] on straights the steering reverses 8.4 times per second and the car drifts 0.38 m (std) around the racing line
+[medium] on straights the speed command changes by 0.86 m/s per step on average ...
+```
+
+Telemetry is grouped by **corner and straight segments derived from the racing line's curvature**
+(`Track.corner_segments()`), so it works on any track without hand-placed boundaries. Smoothness is measured on
+deterministic probe laps, because training rollouts mostly show exploration noise.
+
+The supervisor proposes changes as `recommendations.json`. **Schema v2** (`schema_version: 2`, for the `v2` preset)
+allows only track-independent levers:
+
+| Lever | Default | Range | Addresses |
+|---|---|---|---|
+| `jitter_coef`, `steering_penalty_w` | 0.05, 2.0 | 0.01–0.5, 0.5–3.0 | weaving, steering saturation |
+| `throttle_change_coef` | 0 (off) | 0–0.5 | throttle jitter |
+| `overspeed_coef`, `grip_margin` | 0 (off), 1.0 | 0–2, 0.8–1.5 | overspeed into corners |
+| `time_cost`, `progress_coef`, `lap_bonus`, `waypoint_bonus` | 0.1, 10, 100, 50 | see `schema.WHITELIST_V2` | pace, stagnation |
+| `spawn_random`, `spawn_corner_mix` | 0.75, 0 | 0–0.9, 0–0.5 | coverage, corner practice |
+| `ent_coef` | 0.01 | 0.001–0.05 | exploration |
+
+Every change must cite in `grounds` the current findings that justify it. The validator rejects a change whose cited
+finding is not in the report or does not list that lever (`in_loop.detectors.LEVERS`), caps each move at 25% of its
+range per window, and enforces cooldowns after changes and rollbacks. Schema v1 (used by the post-loop agent) is unchanged.
 
 ## Tests
 

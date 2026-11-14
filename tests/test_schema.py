@@ -115,7 +115,7 @@ class TestRejections(SchemaTestCase):
         self.assertRejected(doc(track=None), "track: required key missing")
 
     def test_bad_version(self):
-        self.assertRejected(doc(schema_version=2), "schema_version")
+        self.assertRejected(doc(schema_version=3), "schema_version")
         self.assertRejected(doc(schema_version="1"), "schema_version")
 
     def test_unknown_parameter(self):
