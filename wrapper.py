@@ -15,7 +15,7 @@ class F1TenthWrapper(gym.Wrapper):
         import csv
         self.waypoints = []
         try:
-            with open('maps/vegas_optimal_line.csv', 'r') as f:
+            with open('maps/cota_optimal_line.csv', 'r') as f:
                 reader = csv.reader(f)
                 next(reader, None)  # Skip header
                 for row in reader:

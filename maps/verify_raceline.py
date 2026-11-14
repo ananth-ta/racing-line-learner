@@ -1,62 +1,54 @@
+"""Draw a racing line and its waypoint indices on the map, for visual checking.
+
+    python maps/verify_raceline.py                       # COTA (defaults)
+    python maps/verify_raceline.py --map maps/sepang     # -> maps/sepang_annotated.png
+
+Waypoint 0 is drawn larger, with an arrow showing the driving direction.
+"""
+
+import argparse
+
 import cv2
-import pandas as pd
 import numpy as np
+import pandas as pd
+import yaml
 
-# F1TENTH YAML Data
-RESOLUTION = 0.05
-ORIGIN_X = -11.606540
-ORIGIN_Y = -27.320793
 
-def annotate_map():
-    print("Loading image and CSV data...")
-    # Load the map image in color so we can draw bright red/green lines
-    img = cv2.imread('maps/vegas.png')
-    
+def annotate_map(stem: str, csv_path: str, out_path: str) -> None:
+    meta = yaml.safe_load(open(stem + ".yaml"))
+    res, ox, oy = float(meta["resolution"]), float(meta["origin"][0]), float(meta["origin"][1])
+    img = cv2.imread(stem + ".png")
     if img is None:
-        print("Error: Could not find vegas.png. Make sure it is in the same folder!")
-        return
-        
-    height, width, _ = img.shape
-    
-    # Load the optimized breadcrumbs
-    try:
-        df = pd.read_csv('maps/vegas_optimal_line.csv')
-    except FileNotFoundError:
-        print("Error: Could not find vegas_optimal_line.csv.")
-        return
+        raise FileNotFoundError(stem + ".png")
+    height = img.shape[0]
+    df = pd.read_csv(csv_path)
 
     points = []
-    
-    print("Reversing YAML math (Meters -> Pixels)...")
     for index, row in df.iterrows():
-        ros_x = row['x']
-        ros_y = row['y']
-        
-        # Reverse the math to get exact pixel coordinates
-        px = int((ros_x - ORIGIN_X) / RESOLUTION)
-        py = int(height - ((ros_y - ORIGIN_Y) / RESOLUTION))
-        
+        # Metres -> pixels (inverse of the YAML transform; image y points down).
+        px = int((row["x"] - ox) / res)
+        py = int(height - ((row["y"] - oy) / res))
         points.append((px, py))
-        
-        # Draw a solid red dot for the specific waypoint
         cv2.circle(img, (px, py), radius=3, color=(0, 0, 255), thickness=-1)
-        
-        # Label the dot sequentially
         cv2.putText(img, str(index), (px + 5, py - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
 
-    print("Drawing continuous racing line...")
-    # Draw a green line connecting the waypoints to visualize the exact path
-    for i in range(len(points) - 1):
-        cv2.line(img, points[i], points[i+1], color=(0, 255, 0), thickness=2)
-        
-    # Connect the final point back to the starting point to close the track loop
-    if len(points) > 1:
-        cv2.line(img, points[-1], points[0], color=(0, 255, 0), thickness=2)
+    for i in range(len(points)):
+        cv2.line(img, points[i], points[(i + 1) % len(points)], color=(0, 255, 0), thickness=2)
+    cv2.circle(img, points[0], radius=8, color=(255, 0, 255), thickness=2)
+    cv2.arrowedLine(img, points[0], points[2], color=(255, 0, 255), thickness=2, tipLength=0.4)
 
-    # Save the annotated image
-    output_filename = 'maps/vegas_annotated.png'
-    cv2.imwrite(output_filename, img)
-    print(f"Success! Visual verification saved to {output_filename}")
+    cv2.imwrite(out_path, img)
+    print(f"{len(points)} waypoints drawn -> {out_path}")
 
-if __name__ == '__main__':
-    annotate_map()
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    p.add_argument("--map", default="maps/cota", help="Map path without extension")
+    p.add_argument("--csv", default=None, help="Waypoint CSV (default: <map>_optimal_line.csv)")
+    p.add_argument("--out", default=None, help="Output image (default: <map>_annotated.png)")
+    a = p.parse_args()
+    annotate_map(a.map, a.csv or a.map + "_optimal_line.csv", a.out or a.map + "_annotated.png")
+
+
+if __name__ == "__main__":
+    main()

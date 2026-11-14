@@ -36,12 +36,22 @@ class TrackSpec:
     map_path: str          # without extension; the simulator appends .yaml / map_ext
     waypoints_csv: str
     map_ext: str = ".png"
+    #: Default start ``(x, y, theta)``; ``None`` = waypoint 0, facing along the line.
+    start_pose: Optional[Tuple[float, float, float]] = None
 
 
-#: Known tracks. ``cota`` is Circuit of the Americas, stored under the
-#: historical (wrong) file name ``maps/vegas``.
+#: Known tracks. ``cota`` is Circuit of the Americas (Austin). Its files were
+#: called ``maps/vegas.*`` until 2026-11; checkpoints trained before the
+#: rename are unaffected (the map contents did not change).
 TRACKS: Dict[str, TrackSpec] = {
-    "cota": TrackSpec(name="cota", map_path="maps/vegas", waypoints_csv="maps/vegas_optimal_line.csv"),
+    # COTA keeps the original start pose (0, 0, 0) so legacy results stay reproducible.
+    "cota": TrackSpec(name="cota", map_path="maps/cota", waypoints_csv="maps/cota_optimal_line.csv",
+                      start_pose=(0.0, 0.0, 0.0)),
+    # Held-out track: Sepang (f1tenth_racetracks map), clockwise like the real circuit.
+    "sepang": TrackSpec(name="sepang", map_path="maps/sepang", waypoints_csv="maps/sepang_optimal_line.csv"),
+    # Control: the same Sepang image scaled 1.65x so the track is as wide as COTA's (~4 m).
+    "sepang_wide": TrackSpec(name="sepang_wide", map_path="maps/sepang_wide",
+                             waypoints_csv="maps/sepang_wide_optimal_line.csv"),
 }
 
 
@@ -81,7 +91,8 @@ class Projection:
 class Track:
     """A loaded track: map location plus closed racing-line geometry."""
 
-    def __init__(self, name: str, map_path: Path, map_ext: str, waypoints: np.ndarray):
+    def __init__(self, name: str, map_path: Path, map_ext: str, waypoints: np.ndarray,
+                 start_pose: Optional[Tuple[float, float, float]] = None):
         wp = np.asarray(waypoints, dtype=np.float64)
         if wp.ndim != 2 or wp.shape[1] != 2 or len(wp) < 3:
             raise ValueError("waypoints must be an (N>=3, 2) array")
@@ -90,6 +101,7 @@ class Track:
         self.map_ext = map_ext
         self.waypoints = wp
         self.n_waypoints = len(wp)
+        self._start_pose = start_pose
 
         # Segment i runs from waypoint i to waypoint i+1 (the last one closes the loop).
         self.seg_vec = np.roll(wp, -1, axis=0) - wp
@@ -127,6 +139,15 @@ class Track:
         """Direction (radians) from waypoint ``i`` toward the next distinct waypoint."""
         d = self.waypoints[self.next_distinct(i)] - self.waypoints[i]
         return math.atan2(d[1], d[0])
+
+    @property
+    def start_pose(self) -> Tuple[float, float, float]:
+        """Default start pose: the registered one, else waypoint 0 facing along the line."""
+        return tuple(self._start_pose) if self._start_pose is not None else self.spawn_pose(0)
+
+    @property
+    def has_custom_start(self) -> bool:
+        return self._start_pose is not None
 
     def spawn_pose(self, i: int) -> Tuple[float, float, float]:
         """``(x, y, theta)`` at waypoint ``i``, facing along the racing line."""
@@ -257,4 +278,4 @@ def load_track(track: Union[str, TrackSpec]) -> Track:
     for ext in (".yaml", spec.map_ext):
         if not Path(str(map_path) + ext).exists():
             raise FileNotFoundError(f"track {spec.name!r}: missing {map_path}{ext}")
-    return Track(spec.name, map_path, spec.map_ext, load_waypoints_csv(_resolve(spec.waypoints_csv)))
+    return Track(spec.name, map_path, spec.map_ext, load_waypoints_csv(_resolve(spec.waypoints_csv)), spec.start_pose)

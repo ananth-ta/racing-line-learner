@@ -8,7 +8,7 @@ from stable_baselines3.common.vec_env import SubprocVecEnv
 from wrapper import F1TenthWrapper
 from ga_model import MutantMLP
 
-MAP_NAME = 'maps/vegas'
+MAP_NAME = 'maps/cota'
 
 def make_env(rank):
     """

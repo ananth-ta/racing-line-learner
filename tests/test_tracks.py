@@ -98,7 +98,7 @@ class TestRegistry(unittest.TestCase):
         t = load_track("cota")
         self.assertEqual(t.n_waypoints, 150)
         self.assertEqual(t.duplicate_indices, (70,))      # rows 70 and 71 share a position
-        self.assertTrue(str(t.map_stem).endswith("maps/vegas"))
+        self.assertTrue(str(t.map_stem).endswith("maps/cota"))
         self.assertGreater(t.length, 100.0)
 
     def test_unknown_track(self):

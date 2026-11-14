@@ -50,7 +50,7 @@ from .tracks import Track, load_track
 
 TERMINATIONS = ("collision", "stagnation", "lap_complete", "time_limit")
 
-#: Pose the original wrapper always started from.
+#: Pose the original wrapper always started from (COTA's registered start pose).
 LEGACY_START_POSE = (0.0, 0.0, 0.0)
 
 
@@ -163,9 +163,12 @@ class F1TenthWrapper(gym.Wrapper):
         elif spawn_idx is not None:
             pose = self.track.spawn_pose(spawn_idx)
             target = self.track.next_distinct(spawn_idx)
-        else:
-            pose = LEGACY_START_POSE
+        elif self.track.has_custom_start:
+            pose = self.track.start_pose      # COTA: (0, 0, 0), target waypoint 0, as originally
             target = 0
+        else:
+            pose = self.track.start_pose      # waypoint 0, facing along the line
+            target = self.track.next_distinct(0)
 
         obs, _, _, _ = self.env.reset(poses=np.array([pose]), **kwargs)
         self.last_raw_obs = obs

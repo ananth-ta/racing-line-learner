@@ -22,7 +22,7 @@ src/racing_line_learner/
   in_loop/validator.py  per-window step cap and cooldown guardrails for in-loop proposals
 scripts/             Colab launchers (setup, run)
 tests/               unit tests (simulator tests skip if f110_gym is not installed)
-maps/                maps and racing lines (COTA is stored as maps/vegas.*)
+maps/                maps and racing lines (cota = Circuit of the Americas)
 ```
 
 The CS 5180 files (`wrapper.py`, `baseline.py`, `render_*.py`, `ga_*.py`, `models/`) are kept unchanged at the repo root. `wrapper.py` also serves as the reference for the legacy parity test.

@@ -1,0 +1,7 @@
+# Sepang scaled by 1.6531 so the track width matches COTA's (~4.05 m); same pixels as sepang.png.
+image: sepang_wide.png
+resolution: 0.098260
+origin: [-109.360216, -97.101850, 0.000000]
+negate: 0
+occupied_thresh: 0.45
+free_thresh: 0.196

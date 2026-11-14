@@ -28,7 +28,7 @@ def get_action(obs):
 # --- Run the Loop ---
 if __name__ == "__main__":
     # Create the env
-    env = gym.make('f110_gym:f110-v0', map='maps/vegas', map_ext='.png', num_agents=1)
+    env = gym.make('f110_gym:f110-v0', map='maps/cota', map_ext='.png', num_agents=1)
     env = F1TenthWrapper(env, algo='ppo')
     
     # Reset with pose (x=0, y=0, theta=0)

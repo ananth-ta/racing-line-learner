@@ -24,7 +24,7 @@ from ga_model import MutantMLP
 # CONFIGURATION
 # ============================================================================
 
-MAP_NAME = 'maps/vegas'
+MAP_NAME = 'maps/cota'
 MAX_STEPS = 10000         # Max steps per episode
 FPS = 30                  # Output video framerate
 
@@ -33,7 +33,7 @@ FPS = 30                  # Output video framerate
 # ============================================================================
 
 class HeadlessRenderer:
-    def __init__(self, map_path='maps/vegas', map_ext='.png', figsize=(19.2, 10.8)):
+    def __init__(self, map_path='maps/cota', map_ext='.png', figsize=(19.2, 10.8)):
         self.figsize = figsize
         
         # Load map image

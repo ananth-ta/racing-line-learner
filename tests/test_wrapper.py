@@ -61,7 +61,7 @@ class TestLegacyParity(unittest.TestCase):
         os.chdir(str(REPO_ROOT))  # the original wrapper loads its CSV relative to cwd
         try:
             legacy = _legacy_module().F1TenthWrapper(
-                gym.make("f110_gym:f110-v0", map="maps/vegas", map_ext=".png", num_agents=1), algo="ppo")
+                gym.make("f110_gym:f110-v0", map="maps/cota", map_ext=".png", num_agents=1), algo="ppo")
             cls.old = _rollout(legacy, cls.N_STEPS, seed=7)
             legacy.close()
             new = make_env("cota", EnvConfig())
@@ -77,7 +77,7 @@ class TestLegacyParity(unittest.TestCase):
         os.chdir(str(REPO_ROOT))
         try:
             legacy = _legacy_module().F1TenthWrapper(
-                gym.make("f110_gym:f110-v0", map="maps/vegas", map_ext=".png", num_agents=1), algo="ppo")
+                gym.make("f110_gym:f110-v0", map="maps/cota", map_ext=".png", num_agents=1), algo="ppo")
         finally:
             os.chdir(self._cwd)
         self.assertEqual(env.observation_space.shape, (69,))
