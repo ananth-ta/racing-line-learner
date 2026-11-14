@@ -61,13 +61,27 @@ class TestLineLapTimer(unittest.TestCase):
 
 
 class TestFlyingStart(unittest.TestCase):
-    def test_out_lap_distance(self):
+    def test_outlap_start_from_geometry(self):
         for name in ("cota", "sepang", "sepang_wide"):
             t = load_track(name)
-            w = t.flying_start_waypoint()
+            w = t.outlap_start_waypoint()
             out_lap = t.length - t.cum_s[w]
-            self.assertGreaterEqual(out_lap, max(50.0, 0.1 * t.length) - 1e-6, name)
-            self.assertLess(out_lap, max(50.0, 0.1 * t.length) + 6.0, name)   # within ~2 waypoints of the target
+            self.assertGreater(w, t.n_waypoints // 2, name)                      # before the line
+            target = max(50.0, 0.1 * t.length)
+            spacing = t.length / t.n_waypoints
+            # At least the target distance (the last waypoint before it), unless moved forward out of a corner.
+            self.assertLessEqual(out_lap, target + 1.5 * spacing, name)
+            self.assertGreater(out_lap, 20.0, name)                               # still a real out-lap
+            self.assertGreaterEqual(t.grip_speed_limit()[w], 12.0, name)         # never mid-corner
+
+    def test_outlap_moves_to_corner_exit(self):
+        t = load_track("cota")
+        grip = t.grip_speed_limit()
+        corner = next(i for i in range(120, 145) if grip[i] < 12.0 and grip[i + 1] < 12.0)
+        spec_w = t.outlap_start_waypoint(min_out_lap_m=t.length - t.cum_s[corner], out_lap_fraction=0.0)
+        self.assertGreater(spec_w, corner)
+        self.assertTrue(np.all(grip[corner:spec_w] < 12.0))
+        self.assertGreaterEqual(grip[spec_w], 12.0)
 
     def test_config_validation(self):
         with self.assertRaises(ValueError):
@@ -105,6 +119,17 @@ class TestLineTimingInSimulator(unittest.TestCase):
         self.assertTrue(env._lap_timer.running)
         self.assertNotEqual(info["termination"], "lap_complete")
 
+    def test_simulator_lap_limit_disabled_with_line_timing(self):
+        from racing_line_learner.env.wrapper import make_env
+        env = make_env("sepang", replace(get_preset("v2"), spawn_random=0.0, lap_timing="line", max_laps=2))
+        self.addCleanup(env.close)
+        obs = env.reset()                                  # spawned on the line, inside the simulator's start zone
+        for _ in range(50):
+            obs, _, done, _ = env.step(np.array([0.0, -0.5], dtype=np.float32))
+            self.assertLess(float(env.env.unwrapped.toggle_list[0]), 2)
+            if done:
+                break
+
     def test_standing_start_runs_clock_from_rest(self):
         from racing_line_learner.env.wrapper import make_env
         env = make_env("sepang", replace(get_preset("v2"), spawn_random=0.0, lap_timing="line", max_laps=1))
@@ -126,17 +151,25 @@ class TestLineTimingInSimulator(unittest.TestCase):
             res = evaluate(driver, "cota", cfg, repeats=2, n_starts=3)
         finally:
             laps.DEFAULT_MAX_SIM_STEPS = old
-        self.assertEqual(res["flying"]["runs"], 2)
-        self.assertEqual(res["standing"]["runs"], 2)
-        self.assertEqual(res["robustness"]["runs"], 3)
-        self.assertEqual(res["flying"]["start_waypoint"], load_track("cota").flying_start_waypoint())
-        for mode in ("flying", "standing", "robustness"):
+        for mode, n in (("flying", 2), ("outlap", 2), ("standing", 2), ("robustness", 3)):
+            self.assertEqual(res[mode]["runs"], n, mode)
+        self.assertEqual(res["outlap"]["start_waypoint"], load_track("cota").outlap_start_waypoint())
+        for mode in ("flying", "outlap", "standing", "robustness"):
             for run in res[mode]["per_run"]:
                 self.assertIn(run["termination"], ("time_limit", "collision", "stagnation", "lap_complete"))
 
-    def test_legacy_model_skips_flying(self):
+    def test_legacy_model_uses_simulator_laps(self):
         from racing_line_learner.eval.laps import eval_config
-        self.assertEqual(eval_config(EnvConfig(), "line").lap_timing, "spawn")
+        cfg = eval_config(EnvConfig(), "line", laps=2)
+        self.assertEqual((cfg.lap_timing, cfg.max_laps), ("spawn", 2))
+
+    def test_timed_lap_selection(self):
+        from racing_line_learner.eval.laps import _summary
+        runs = [{"termination": "lap_complete", "lap_times": [47.0, 45.0], "line_speeds": [12.0, 11.5], "waypoint": 0},
+                {"termination": "collision", "lap_times": [46.8], "line_speeds": [12.1], "waypoint": 72}]
+        s = _summary(runs, "flying")
+        self.assertEqual((s["completed"], s["lap_time_mean"], s["line_speed_mean"]), (1, 45.0, 12.0))
+        self.assertEqual(s["failures_at"], [{"waypoint": 72, "count": 1}])
 
 
 if __name__ == "__main__":

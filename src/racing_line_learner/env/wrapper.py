@@ -244,6 +244,13 @@ class F1TenthWrapper(gym.Wrapper):
             obs, _, env_done, info = self.env.step(np.array([[steer, speed]]))
             self.last_raw_obs = obs
             self.sim_steps += 1
+            if c.lap_timing == "line":
+                # The simulator ends its episode after 2 laps around the *spawn* pose. With
+                # line timing our own timer decides; keep the simulator's counter below its
+                # limit (it moves by at most 1 per step, and its parity tracks "near start").
+                sim = self.env.unwrapped
+                if hasattr(sim, "toggle_list"):
+                    sim.toggle_list %= 2
 
             collision = bool(obs["collisions"][0])
             agent_pos = np.array([obs["poses_x"][0], obs["poses_y"][0]])

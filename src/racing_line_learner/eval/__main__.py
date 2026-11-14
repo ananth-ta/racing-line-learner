@@ -20,7 +20,7 @@ def main(argv=None):
     p.add_argument("--env", action="append", default=[], metavar="KEY=VALUE")
     p.add_argument("--tracks", nargs="+", default=["cota"])
     p.add_argument("--modes", nargs="+", default=list(MODES), choices=MODES)
-    p.add_argument("--repeats", type=int, default=5, help="Jittered repeats for flying/standing laps.")
+    p.add_argument("--repeats", type=int, default=5, help="Jittered repeats for flying/outlap/standing laps.")
     p.add_argument("--n_starts", type=int, default=16, help="Start points for the robustness mode.")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--json", default=None, help="Write full results (with per-run details) here.")
@@ -33,7 +33,7 @@ def main(argv=None):
     results = {"model": args.model, "preset": args.preset,
                "tracks": [evaluate(model, t, config, args.modes, args.repeats, args.n_starts, seed=args.seed)
                           for t in args.tracks]}
-    print(f"{'track':12s} {'mode':11s} {'laps':>7s} {'mean':>8s} {'std':>6s} {'best':>8s}  failures")
+    print(f"{'track':12s} {'mode':11s} {'laps':>7s} {'mean':>8s} {'std':>6s} {'best':>8s} {'v@line':>7s}  failures")
     for tr in results["tracks"]:
         for mode in args.modes:
             s = tr[mode]
@@ -43,7 +43,7 @@ def main(argv=None):
             fmt = lambda v, w: f"{v:>{w}}" if v is not None else f"{'-':>{w}}"
             fails = ", ".join(f"wp{f['waypoint']}x{f['count']}" for f in s["failures_at"][:4]) or "-"
             print(f"{tr['track']:12s} {mode:11s} {s['completed']:>3d}/{s['runs']:<3d} {fmt(s['lap_time_mean'], 8)} "
-                  f"{fmt(s['lap_time_std'], 6)} {fmt(s['lap_time_best'], 8)}  {fails}")
+                  f"{fmt(s['lap_time_std'], 6)} {fmt(s['lap_time_best'], 8)} {fmt(s['line_speed_mean'], 7)}  {fails}")
     if args.json:
         Path(args.json).write_text(json.dumps(results, indent=2))
     return results
