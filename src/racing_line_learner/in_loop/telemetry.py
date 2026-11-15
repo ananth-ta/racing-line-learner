@@ -108,6 +108,7 @@ class TelemetryCollector:
         self.steer_reversals = 0
         self.throttle_reversals = 0
         self.throttle_change_sum = 0.0
+        self.steer_change_sum = 0.0
         self.lateral_straight: List[float] = []
         self.seg_lat_sum = np.zeros(m)
         self.seg_lat_sq = np.zeros(m)
@@ -183,6 +184,8 @@ class TelemetryCollector:
                 delta = signal - p[key]
                 if straight and key == "cmd":
                     self.throttle_change_sum += abs(delta)
+                elif straight and key == "steer":
+                    self.steer_change_sum += abs(delta)
                 if abs(delta) > REVERSAL_DEADBAND:
                     sign = 1 if delta > 0 else -1
                     if straight and p.get(key + "_sign", sign) != sign:
@@ -294,6 +297,8 @@ class TelemetryCollector:
             "smoothness": {
                 "straight_share": _r(self.straight_steps / steps, 3),
                 "steer_reversals_per_s": _r(self.steer_reversals / straight_s) if straight_s else None,
+                # Size of the steering corrections (rad per policy step): what the jitter penalty acts on.
+                "steer_change_per_step": _r(self.steer_change_sum / self.straight_steps, 4) if self.straight_steps else None,
                 "lateral_std_m": _r(lat.std(), 3) if lat.size > 1 else None,
                 "lateral_range_m": _r(np.percentile(lat, 95) - np.percentile(lat, 5), 2) if lat.size > 1 else None,
                 "throttle_change_per_step": _r(self.throttle_change_sum / self.straight_steps, 3) if self.straight_steps else None,

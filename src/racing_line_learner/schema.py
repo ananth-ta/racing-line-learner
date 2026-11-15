@@ -83,8 +83,12 @@ WHITELIST_V2: Dict[str, ParamSpec] = {
     "progress_coef": ParamSpec(default=10.0, low=5.0, high=20.0),
     "waypoint_bonus": ParamSpec(default=50.0, low=20.0, high=100.0),
     "steering_penalty_w": ParamSpec(default=2.0, low=0.5, high=3.0),
-    "jitter_coef": ParamSpec(default=0.05, low=0.01, high=0.5),
-    "throttle_change_coef": ParamSpec(default=0.0, low=0.0, high=0.5),
+    # Smoothness penalties, sized by three lever checks (2026-11-14/15). Progress + waypoint bonus pay ~11-12 per
+    # policy step. jitter_coef 15 (~10% of the reward) cut steering-correction size by 26%, so its range reaches the
+    # tens. throttle_change_coef 0.5 had a small effect but 2.0 made the policy pin the speed command at maximum and
+    # crash (reward hacking), so its range stops at 1.0 (0.25 per supervisor step).
+    "jitter_coef": ParamSpec(default=0.05, low=0.01, high=50.0),
+    "throttle_change_coef": ParamSpec(default=0.0, low=0.0, high=1.0),
     "overspeed_coef": ParamSpec(default=0.0, low=0.0, high=2.0),
     "grip_margin": ParamSpec(default=1.0, low=0.8, high=1.5),
     "time_cost": ParamSpec(default=0.1, low=0.02, high=0.3),

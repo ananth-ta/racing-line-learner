@@ -53,14 +53,16 @@ ALGO_KEYS = ("ent_coef",)
 class JudgeConfig:
     """When a change counts as a regression or an improvement (probe-based, noise-aware)."""
 
-    completion_drop: float = 0.26      # completion may fall by at most this much (about one probe run in four)
-    lap_time_margin_s: float = 0.3     # minimum lap-time margin; widened to 2x the probes' own spread
+    # Sized from the lever check: between 100k checkpoints, even an unchanged run swings 39.7-43.6 s and 0-8/8 laps.
+    completion_drop: float = 0.26      # completion may fall by at most this much (two probe runs in eight)
+    lap_time_margin_s: float = 1.5     # minimum lap-time margin; widened to 2x the probes' own spread
     target_gain: float = 0.10          # a targeted smoothness metric improving by this fraction counts as improved
 
 
 #: Which probe smoothness metric a finding's fix should move (lower is better).
 TARGET_METRIC = {
-    "weaving": "steer_reversals_per_s",
+    # The jitter penalty shrinks the size of steering corrections, not their count (lever check 2026-11-15).
+    "weaving": "steer_change_per_step",
     "throttle_jitter": "throttle_change_per_step",
 }
 
@@ -228,7 +230,7 @@ class SupervisorCallback(_make_callback_base()):
     """SB3 callback running the look / judge / propose / guard / apply loop. See the module docstring."""
 
     def __init__(self, track: Track, base_config: EnvConfig, proposer: Proposer, out_dir: str,
-                 window_steps: int = 250_000, probe_runs: int = 4, probe_max_sim_steps: int = 30000,
+                 window_steps: int = 250_000, probe_runs: int = 8, probe_max_sim_steps: int = 30000,
                  validator: ValidatorConfig = ValidatorConfig(), judge_config: JudgeConfig = JudgeConfig(),
                  source_model: str = "", seed: int = 0, verbose: int = 0):
         super().__init__(verbose)
@@ -409,6 +411,7 @@ def _probe_brief(p: Dict[str, Any]) -> Dict[str, Any]:
     sm = p.get("smoothness") or {}
     return {"completion_rate": p.get("completion_rate"), "lap_time_mean": p.get("lap_time_mean"),
             "lap_time_std": p.get("lap_time_std"), "steer_reversals_per_s": sm.get("steer_reversals_per_s"),
+            "steer_change_per_step": sm.get("steer_change_per_step"),
             "throttle_change_per_step": sm.get("throttle_change_per_step"), "lateral_std_m": sm.get("lateral_std_m")}
 
 

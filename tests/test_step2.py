@@ -101,6 +101,7 @@ class TestSmoothnessTelemetry(unittest.TestCase):
         self.assertAlmostEqual(sm["straight_share"], 1.0)
         self.assertGreater(sm["steer_reversals_per_s"], 20)                       # flips every 0.04 s step
         self.assertAlmostEqual(sm["throttle_change_per_step"], 2.0, places=1)
+        self.assertAlmostEqual(sm["steer_change_per_step"], 0.2, places=2)        # +/-0.1 rad flips: 0.2 per step
         self.assertGreater(sm["lateral_std_m"], 0.25)
         ids = [f["id"] for f in detect(r)]
         self.assertIn("weaving", ids)
@@ -176,7 +177,7 @@ class TestSchemaV2(unittest.TestCase):
     def test_rejections(self):
         cases = [
             (v2_doc({"speed_floor": 7.0}), "not a tunable parameter"),             # v1-only key
-            (v2_doc({"jitter_coef": 0.9}), "out of range"),
+            (v2_doc({"jitter_coef": 90.0}), "out of range"),
             (v2_doc({"jitter_coef": 0.1}, grounds={}), "must cite"),
             (v2_doc({"jitter_coef": 0.1}, grounds={"jitter_coef": []}), "non-empty list"),
             (v2_doc({"jitter_coef": 0.1}, grounds={"jitter_coef": ["weaving"], "time_cost": ["x"]}), "not one of the proposed"),
@@ -231,7 +232,7 @@ class TestGrounding(unittest.TestCase):
         self.assertTrue(self.check({"time_cost": 0.12}, {"time_cost": ["weaving"]}, config=off).accepted)
 
     def test_v2_step_cap_uses_v2_ranges(self):
-        res = self.check({"jitter_coef": 0.2}, {"jitter_coef": ["weaving"]})      # cap = 0.25 x 0.49 = 0.1225
+        res = self.check({"jitter_coef": 15.0}, {"jitter_coef": ["weaving"]})     # cap = 0.25 x 49.99 = 12.5
         self.assertFalse(res.accepted)
         self.assertIn("exceeds per-window cap", res.errors[0])
 

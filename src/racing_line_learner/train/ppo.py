@@ -102,7 +102,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--supervisor", default="none", choices=("none", "stub", "rules", "replay"),
                    help="In-loop supervisor proposer (needs a laptime-mode preset such as v2).")
     p.add_argument("--window_steps", type=int, default=250_000, help="Supervisor window length in policy steps.")
-    p.add_argument("--probe_runs", type=int, default=4, help="Jittered out-laps in each supervisor probe.")
+    p.add_argument("--probe_runs", type=int, default=8, help="Jittered out-laps in each supervisor probe.")
     p.add_argument("--probe_max_sim_steps", type=int, default=30_000, help="Simulator-step cap per probe lap.")
     p.add_argument("--replay_log", default=None, help="proposals.jsonl to replay with --supervisor replay.")
     for key, value in DEFAULT_HPARAMS.items():

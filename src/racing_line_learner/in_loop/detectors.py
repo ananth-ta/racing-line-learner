@@ -146,9 +146,10 @@ def _smoothness_findings(report: Dict[str, Any]) -> List[Dict[str, Any]]:
     if rev is not None and lat is not None and rev >= WEAVING_REVERSALS_PER_S and lat >= WEAVING_LATERAL_STD_M:
         out.append(_finding(
             "weaving", "medium",
-            f"on straights the steering reverses {rev:.1f} times per second and the car drifts {lat:.2f} m (std) "
-            f"around the racing line ({source})",
-            steer_reversals_per_s=rev, lateral_std_m=lat, lateral_range_m=sm.get("lateral_range_m"), source=source))
+            f"on straights the steering reverses {rev:.1f} times per second, by {sm.get('steer_change_per_step')} rad "
+            f"per step on average, and the car drifts {lat:.2f} m (std) around the racing line ({source})",
+            steer_reversals_per_s=rev, steer_change_per_step=sm.get("steer_change_per_step"), lateral_std_m=lat,
+            lateral_range_m=sm.get("lateral_range_m"), source=source))
     thr = sm.get("throttle_change_per_step")
     if thr is not None and thr >= THROTTLE_CHANGE_PER_STEP:
         out.append(_finding(

@@ -118,8 +118,8 @@ allows only track-independent levers:
 
 | Lever | Default | Range | Addresses |
 |---|---|---|---|
-| `jitter_coef`, `steering_penalty_w` | 0.05, 2.0 | 0.01–0.5, 0.5–3.0 | weaving, steering saturation |
-| `throttle_change_coef` | 0 (off) | 0–0.5 | throttle jitter |
+| `jitter_coef`, `steering_penalty_w` | 0.05, 2.0 | 0.01–50, 0.5–3.0 | weaving, steering saturation |
+| `throttle_change_coef` | 0 (off) | 0–1.0 | throttle jitter |
 | `overspeed_coef`, `grip_margin` | 0 (off), 1.0 | 0–2, 0.8–1.5 | overspeed into corners |
 | `time_cost`, `progress_coef`, `lap_bonus`, `waypoint_bonus` | 0.1, 10, 100, 50 | see `schema.WHITELIST_V2` | pace, stagnation |
 | `spawn_random`, `spawn_corner_mix` | 0.75, 0 | 0–0.9, 0–0.5 | coverage, corner practice |

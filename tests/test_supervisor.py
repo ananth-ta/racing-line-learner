@@ -31,16 +31,19 @@ class TestJudge(unittest.TestCase):
         self.assertEqual(judge(probe(c=1.0), probe(c=0.5))["outcome"], OUTCOME_ROLLED_BACK)
 
     def test_slower_lap_rolls_back_beyond_noise_only(self):
-        self.assertEqual(judge(probe(t=43.0), probe(t=43.2))["outcome"], OUTCOME_NEUTRAL)       # within 0.3 s
-        self.assertEqual(judge(probe(t=43.0), probe(t=44.0))["outcome"], OUTCOME_ROLLED_BACK)
-        noisy = judge(probe(t=43.0, std=0.6), probe(t=44.0, std=0.6))                           # margin 1.2 s
+        self.assertEqual(judge(probe(t=43.0), probe(t=44.2))["outcome"], OUTCOME_NEUTRAL)       # within 1.5 s
+        self.assertEqual(judge(probe(t=43.0), probe(t=45.0))["outcome"], OUTCOME_ROLLED_BACK)
+        noisy = judge(probe(t=43.0, std=1.0), probe(t=45.0, std=1.0))                           # margin 2.0 s
         self.assertEqual(noisy["outcome"], OUTCOME_NEUTRAL)
 
     def test_improvements(self):
-        self.assertEqual(judge(probe(t=43.0), probe(t=42.0))["outcome"], OUTCOME_IMPROVED)
+        self.assertEqual(judge(probe(t=43.0), probe(t=41.0))["outcome"], OUTCOME_IMPROVED)
         self.assertEqual(judge(probe(c=0.25), probe(c=0.75))["outcome"], OUTCOME_IMPROVED)
-        self.assertEqual(judge(probe(rev=9.0), probe(rev=7.5), targets=["weaving"])["outcome"], OUTCOME_IMPROVED)
-        self.assertEqual(judge(probe(rev=9.0), probe(rev=7.5))["outcome"], OUTCOME_NEUTRAL)     # not the target
+        before, after = probe(), probe()
+        before["smoothness"]["steer_change_per_step"], after["smoothness"]["steer_change_per_step"] = 0.075, 0.056
+        self.assertEqual(judge(before, after, targets=["weaving"])["outcome"], OUTCOME_IMPROVED)  # size, not count
+        self.assertEqual(judge(before, after)["outcome"], OUTCOME_NEUTRAL)                       # not the target
+        self.assertEqual(judge(probe(rev=9.0), probe(rev=7.5), targets=["weaving"])["outcome"], OUTCOME_NEUTRAL)
 
     def test_missing_lap_times(self):
         self.assertEqual(judge({"completion_rate": 0.0}, {"completion_rate": 0.0})["outcome"], OUTCOME_NEUTRAL)
