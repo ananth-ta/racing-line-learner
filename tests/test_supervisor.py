@@ -154,6 +154,10 @@ class TestSupervisedTraining(unittest.TestCase):
                 self.assertAlmostEqual(state["current"]["jitter_coef"], 0.05)              # restored
                 self.assertGreaterEqual(state["counts"]["rolled_back"], 1)
                 self.assertTrue((run / "supervisor_checkpoints" / "pre_w0001.zip").exists())
+                # A change proposed right after a rollback is judged against the restored checkpoint's probe.
+                after_rb = [e for e in log if e["type"] == "proposal" and e["window"] == 2][0]
+                first = [e for e in log if e["type"] == "proposal" and e["window"] == 1][0]
+                self.assertEqual(after_rb["probe"], first["probe"])
 
                 # Resume after a "disconnect": drop the final checkpoint, rerun the same command.
                 final = sorted((run / "checkpoints").glob("*.zip"))[-1]

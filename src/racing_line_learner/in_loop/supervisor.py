@@ -327,8 +327,11 @@ class SupervisorCallback(_make_callback_base()):
         report["findings"] = findings
         self.out_dir.mkdir(parents=True, exist_ok=True)
         save_json(report, self.out_dir / "telemetry" / f"w{window:04d}.json")
-        self._judge_pending(window, probe)
-        self._propose_and_apply(window, report, findings, probe)
+        rolled_back_to = self._judge_pending(window, probe)
+        # After a rollback the policy is the restored checkpoint, so the next change must be judged against that
+        # checkpoint's own probe (taken when it was saved), not against the probe of the rolled-back policy.
+        baseline = rolled_back_to if rolled_back_to is not None else probe
+        self._propose_and_apply(window, report, findings, baseline)
         self.state.window = window
         self.state.save(self.state_path)
         self.collector.reset()
@@ -336,10 +339,11 @@ class SupervisorCallback(_make_callback_base()):
             print(f"[supervisor] window {window} done in {time.time() - t0:.1f}s; current {self.state.current}")
 
     # ---------------- judge / propose ----------------
-    def _judge_pending(self, window: int, probe: Dict[str, Any]) -> None:
+    def _judge_pending(self, window: int, probe: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Judge the pending change. Returns the restored checkpoint's probe if it was rolled back, else ``None``."""
         p = self.state.pending
         if not p:
-            return
+            return None
         verdict = judge(p["probe_before"], probe, p.get("targets", ()), self.judge_config)
         outcome = verdict["outcome"]
         if outcome == OUTCOME_ROLLED_BACK:
@@ -353,6 +357,7 @@ class SupervisorCallback(_make_callback_base()):
                    "outcome": outcome, "reason": verdict["reason"],
                    "probe_before": _probe_brief(p["probe_before"]), "probe_after": _probe_brief(probe)})
         self.state.pending = None
+        return p["probe_before"] if outcome == OUTCOME_ROLLED_BACK else None
 
     def _propose_and_apply(self, window: int, report, findings, probe) -> None:
         history = self.state.key_history()
