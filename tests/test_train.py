@@ -123,6 +123,17 @@ class TestTrainingSmoke(unittest.TestCase):
             path, log = self.run_main(*base)
             self.assertTrue(path.exists(), path)
 
+    def test_finetune_with_different_env_count(self):
+        """A model saved with 2 envs continues with 1 env and a different --n_steps (rollout buffer rebuilt)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with contextlib.redirect_stdout(io.StringIO()):
+                first = main(["--run_name", "a", "--output_dir", tmp, "--preset", "v2", "--n_envs", "2",
+                              "--timesteps", "512", "--n_steps", "128", "--batch_size", "64", "--checkpoint_freq", "512"])
+                second = main(["--run_name", "b", "--output_dir", tmp, "--preset", "v2", "--n_envs", "1",
+                               "--timesteps", "512", "--n_steps", "256", "--batch_size", "64", "--checkpoint_freq", "512",
+                               "--resume", str(first)])
+            self.assertEqual(second.name, "ppo_cota_b_1024_steps.zip")
+
     def test_v2_parallel_envs(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = io.StringIO()

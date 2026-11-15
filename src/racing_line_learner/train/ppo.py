@@ -99,6 +99,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="cpu", help="Torch device (the small MLP policy trains fastest on cpu).")
     p.add_argument("--checkpoint_freq", type=int, default=100_000, help="Save a checkpoint every N steps.")
+    p.add_argument("--supervisor", default="none", choices=("none", "stub", "rules", "replay"),
+                   help="In-loop supervisor proposer (needs a laptime-mode preset such as v2).")
+    p.add_argument("--window_steps", type=int, default=250_000, help="Supervisor window length in policy steps.")
+    p.add_argument("--probe_runs", type=int, default=4, help="Jittered out-laps in each supervisor probe.")
+    p.add_argument("--probe_max_sim_steps", type=int, default=30_000, help="Simulator-step cap per probe lap.")
+    p.add_argument("--replay_log", default=None, help="proposals.jsonl to replay with --supervisor replay.")
     for key, value in DEFAULT_HPARAMS.items():
         p.add_argument(f"--{key}", type=type(value), default=None, help=f"PPO {key} (default: {value}).")
     args = p.parse_args(argv)
@@ -164,11 +170,14 @@ def build_run_spec(args: argparse.Namespace) -> Dict[str, Any]:
         "seed": args.seed,
         "timesteps": args.timesteps,
         "recommendation": recommendation,
+        "supervisor": None if args.supervisor == "none" else {
+            "proposer": args.supervisor, "window_steps": args.window_steps, "probe_runs": args.probe_runs,
+            "probe_max_sim_steps": args.probe_max_sim_steps, "replay_log": args.replay_log},
     }
 
 
 #: Defaults for spec keys that older run.json files do not have.
-_SPEC_DEFAULTS = {"n_envs": 1, "env_overrides": {}}
+_SPEC_DEFAULTS = {"n_envs": 1, "env_overrides": {}, "supervisor": None}
 
 
 def _spec_mismatches(saved: Dict[str, Any], current: Dict[str, Any]) -> List[str]:
@@ -179,7 +188,7 @@ def _spec_mismatches(saved: Dict[str, Any], current: Dict[str, Any]) -> List[str
     resuming it.
     """
     out = []
-    for key in ("track", "preset", "env_overrides", "n_envs", "seed", "timesteps", "recommendation"):
+    for key in ("track", "preset", "env_overrides", "n_envs", "seed", "timesteps", "recommendation", "supervisor"):
         if saved.get(key, _SPEC_DEFAULTS.get(key)) != current.get(key, _SPEC_DEFAULTS.get(key)):
             out.append(key)
     # Hyperparameters added later default to their (behaviour-preserving) defaults.
@@ -191,6 +200,11 @@ def _spec_mismatches(saved: Dict[str, Any], current: Dict[str, Any]) -> List[str
     except (KeyError, ValueError, TypeError):
         out.append("env_config")
     return out
+
+
+def env_count(env) -> int:
+    """Number of parallel envs in a (possibly unwrapped, single) training env."""
+    return int(getattr(env, "num_envs", 1))
 
 
 def make_training_env(track: str, env_config: EnvConfig, n_envs: int, seed: int):
@@ -248,8 +262,18 @@ def main(argv: Optional[Sequence[str]] = None) -> Path:
 
     def load(path: str, start: int):
         schedule = RunLinearSchedule(hp["learning_rate"], start, args.timesteps)
-        return PPO.load(path, env=env, device=args.device,
-                        custom_objects={"learning_rate": schedule, "ent_coef": hp["ent_coef"]})
+        model = PPO.load(path, env=env, device=args.device,
+                         custom_objects={"learning_rate": schedule, "ent_coef": hp["ent_coef"]})
+        # A model may continue with a different number of parallel envs (or an explicit --n_steps) than it was
+        # saved with; SB3 keeps the saved rollout buffer shape, so rebuild the buffer for the current setup.
+        n_steps = args.n_steps if args.n_steps is not None else model.n_steps
+        if model.n_envs != env_count(env) or model.n_steps != n_steps:
+            from stable_baselines3.common.buffers import RolloutBuffer
+            model.n_envs, model.n_steps = env_count(env), n_steps
+            model.rollout_buffer = RolloutBuffer(n_steps, model.observation_space, model.action_space,
+                                                 device=model.device, gamma=model.gamma,
+                                                 gae_lambda=model.gae_lambda, n_envs=model.n_envs)
+        return model
 
     if latest is not None:
         steps, path = latest
@@ -285,6 +309,17 @@ def main(argv: Optional[Sequence[str]] = None) -> Path:
     # CheckpointCallback counts vectorised steps (n_envs env steps each).
     callback = CheckpointCallback(save_freq=max(1, args.checkpoint_freq // args.n_envs), save_path=str(ckpt_dir),
                                   name_prefix=prefix)
+    if spec["supervisor"]:
+        from stable_baselines3.common.callbacks import CallbackList
+
+        from ..env.tracks import load_track
+        from ..in_loop.supervisor import SupervisorCallback, make_proposer
+        sv = spec["supervisor"]
+        supervisor = SupervisorCallback(
+            load_track(args.track), env_config, make_proposer(sv["proposer"], sv["replay_log"]), str(run_dir),
+            window_steps=sv["window_steps"], probe_runs=sv["probe_runs"], probe_max_sim_steps=sv["probe_max_sim_steps"],
+            source_model=prefix, seed=args.seed, verbose=1)
+        callback = CallbackList([callback, supervisor])
     print(f"Training {remaining} steps ({done_steps}/{args.timesteps} done) -> {run_dir}")
     model.learn(total_timesteps=remaining, callback=callback, reset_num_timesteps=False, tb_log_name="ppo")
 

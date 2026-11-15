@@ -25,6 +25,7 @@ src/racing_line_learner/
   in_loop/detectors.py  deterministic findings + which levers address each finding
   in_loop/validator.py  guardrails for proposals: step cap, cooldowns, grounding
   in_loop/analyze.py    offline telemetry report for a saved model
+  in_loop/supervisor.py SB3 callback: probe, judge/rollback, propose (rules, replay, stub), validate, apply
 scripts/             Colab launchers (setup, run)
 tests/               unit tests (simulator tests skip if f110_gym is not installed)
 maps/                maps and racing lines (cota = Circuit of the Americas)
@@ -123,6 +124,20 @@ allows only track-independent levers:
 | `time_cost`, `progress_coef`, `lap_bonus`, `waypoint_bonus` | 0.1, 10, 100, 50 | see `schema.WHITELIST_V2` | pace, stagnation |
 | `spawn_random`, `spawn_corner_mix` | 0.75, 0 | 0–0.9, 0–0.5 | coverage, corner practice |
 | `ent_coef` | 0.01 | 0.001–0.05 | exploration |
+
+Run training under the supervisor with `--supervisor rules` (the rule-based tuner), `stub` (telemetry and probes, no
+changes) or `replay --replay_log <proposals.jsonl>` (re-apply a logged run):
+
+```bash
+python -m racing_line_learner.train --run_name cota_rules_s0 --preset v2 --supervisor rules --window_steps 250000 \
+    --n_envs 8 --n_steps 512 --timesteps 1250000
+```
+
+At each window boundary (at the end of a PPO rollout) it runs a deterministic probe of jittered out-laps, judges the
+previous change (rolling it back from a pre-change checkpoint if completion or lap time got worse beyond the probe's
+noise), asks the proposer for a change, validates it and applies it to every env. It writes `proposals.jsonl`,
+`telemetry/w*.json` and `supervisor_state.json` in the run directory, so a restarted run resumes without repeating a
+decision.
 
 Every change must cite in `grounds` the current findings that justify it. The validator rejects a change whose cited
 finding is not in the report or does not list that lever (`in_loop.detectors.LEVERS`), caps each move at 25% of its
