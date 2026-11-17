@@ -134,7 +134,7 @@ class TestSupervisedTraining(unittest.TestCase):
     def test_rollback_and_resume(self):
         old_judge, old_make = sv.judge, sv.make_proposer
         sv.judge = lambda before, after, targets=(), config=None: {"outcome": OUTCOME_ROLLED_BACK, "reason": "forced"}
-        sv.make_proposer = lambda name, replay_log=None, validator=None: AlwaysJitter()
+        sv.make_proposer = lambda name, replay_log=None, validator=None, llm=None: AlwaysJitter()
         # Every proposal cites "weaving"; make sure the finding is present so grounding passes.
         old_detect = sv.detect
         sv.detect = lambda report: old_detect(report) + [{"id": "weaving", "severity": "medium", "message": "",

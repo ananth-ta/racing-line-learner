@@ -266,39 +266,7 @@ class SupervisorCallback(_make_callback_base()):
             f.write(json.dumps(entry, default=float) + "\n")
 
     def _probe(self) -> Dict[str, Any]:
-        """Deterministic jittered out-laps under the current config: completion, lap time, smoothness."""
-        from ..env.wrapper import make_env
-        from ..eval.laps import drive, eval_config
-        cfg = replace(eval_config(self._config(), "line", laps=1), max_episode_steps=self.probe_max_sim_steps)
-        env = make_env(self.track, cfg, seed=self.seed)
-        collector = TelemetryCollector(self.track, cfg)
-        rng = np.random.RandomState(self.seed)
-        base = self.track.spawn_pose(self.track.outlap_start_waypoint())
-        runs = []
-        try:
-            for k in range(self.probe_runs):
-                pose = base if k == 0 else (base[0] + rng.normal(0, 0.05), base[1] + rng.normal(0, 0.05),
-                                            base[2] + rng.normal(0, 0.02))
-                obs = env.reset(pose=pose)
-                info: Dict[str, Any] = {}
-                for _ in range(self.probe_max_sim_steps):
-                    action, _ = self.model.predict(obs, deterministic=True)
-                    obs, reward, done, info = env.step(action)
-                    collector.update(info, reward)
-                    if done:
-                        break
-                runs.append({"spawn": None, "termination": info.get("termination"),
-                             "lap_time": info.get("lap_time"), "waypoint": info.get("current_waypoint_idx")})
-        finally:
-            env.close()
-        probe = summarize_probe(runs)
-        laps = [r["lap_time"] for r in runs if r["termination"] == "lap_complete" and r["lap_time"] is not None]
-        probe["lap_time_std"] = round(float(np.std(laps)), 3) if len(laps) > 1 else None
-        rep = collector.report()
-        probe["smoothness"] = rep["smoothness"]
-        probe["segments"] = [{k: s[k] for k in ("name", "waypoints", "is_corner", "lateral_std", "pass_time_s")}
-                             for s in rep["segments"]]
-        return probe
+        return probe_policy(self.model, self.track, self._config(), self.probe_runs, self.probe_max_sim_steps, self.seed)
 
     # ---------------- SB3 hooks ----------------
     def _on_training_start(self) -> None:
@@ -361,9 +329,13 @@ class SupervisorCallback(_make_callback_base()):
 
     def _propose_and_apply(self, window: int, report, findings, probe) -> None:
         history = self.state.key_history()
-        context = {"source_model": self.source_model, "track": self.track.name}
+        from .llm import recent_decisions
+        context = {"source_model": self.source_model, "track": self.track.name, "n_waypoints": self.track.n_waypoints,
+                   "recent": recent_decisions(self.log_path, before_window=window)}
         t0 = time.time()
         error = None
+        if hasattr(self.proposer, "last_meta"):
+            self.proposer.last_meta = None
         try:
             raw = self.proposer.propose(report, findings, dict(self.state.current), history, window, context)
         except Exception as exc:                       # a failing proposer must never stop training
@@ -372,6 +344,8 @@ class SupervisorCallback(_make_callback_base()):
         entry = {"type": "proposal", "window": window, "timesteps": self.num_timesteps, "proposer": self.proposer.name,
                  "raw": raw, "latency_s": round(latency, 3), "findings": [f["id"] for f in findings],
                  "probe": _probe_brief(probe)}
+        if getattr(self.proposer, "last_meta", None):
+            entry["llm"] = self.proposer.last_meta
         self.state.counts["proposals"] += 1
         if raw is None:
             entry.update(status="none" if error is None else "error", errors=[error] if error else [])
@@ -408,8 +382,46 @@ class SupervisorCallback(_make_callback_base()):
         for key in rec.changes:
             self.state.history[key] = asdict(KeyHistory(window=window, outcome=OUTCOME_PENDING))
         self.state.counts["accepted"] += 1
-        entry.update(status="accepted", errors=[], applied=rec.changes, grounds={k: list(v) for k, v in rec.grounds.items()})
+        entry.update(status="accepted", errors=[], applied=rec.changes, grounds={k: list(v) for k, v in rec.grounds.items()},
+                     values_before={k: before.get(k) for k in rec.changes})
         self._log(entry)
+
+
+def probe_policy(model, track: Track, config: EnvConfig, probe_runs: int = 8, max_sim_steps: int = 30000,
+                 seed: int = 0) -> Dict[str, Any]:
+    """Deterministic jittered out-laps under ``config``: completion, lap time, smoothness, per-segment line spread."""
+    from ..env.wrapper import make_env
+    from ..eval.laps import eval_config
+    cfg = replace(eval_config(config, "line", laps=1), max_episode_steps=max_sim_steps)
+    env = make_env(track, cfg, seed=seed)
+    collector = TelemetryCollector(track, cfg)
+    rng = np.random.RandomState(seed)
+    base = track.spawn_pose(track.outlap_start_waypoint())
+    runs = []
+    try:
+        for k in range(probe_runs):
+            pose = base if k == 0 else (base[0] + rng.normal(0, 0.05), base[1] + rng.normal(0, 0.05),
+                                        base[2] + rng.normal(0, 0.02))
+            obs = env.reset(pose=pose)
+            info: Dict[str, Any] = {}
+            for _ in range(max_sim_steps):
+                action, _ = model.predict(obs, deterministic=True)
+                obs, reward, done, info = env.step(action)
+                collector.update(info, reward)
+                if done:
+                    break
+            runs.append({"spawn": None, "termination": info.get("termination"),
+                         "lap_time": info.get("lap_time"), "waypoint": info.get("current_waypoint_idx")})
+    finally:
+        env.close()
+    probe = summarize_probe(runs)
+    laps = [r["lap_time"] for r in runs if r["termination"] == "lap_complete" and r["lap_time"] is not None]
+    probe["lap_time_std"] = round(float(np.std(laps)), 3) if len(laps) > 1 else None
+    rep = collector.report()
+    probe["smoothness"] = rep["smoothness"]
+    probe["segments"] = [{k: s[k] for k in ("name", "waypoints", "is_corner", "lateral_std", "pass_time_s")}
+                         for s in rep["segments"]]
+    return probe
 
 
 def _probe_brief(p: Dict[str, Any]) -> Dict[str, Any]:
@@ -420,7 +432,19 @@ def _probe_brief(p: Dict[str, Any]) -> Dict[str, Any]:
             "throttle_change_per_step": sm.get("throttle_change_per_step"), "lateral_std_m": sm.get("lateral_std_m")}
 
 
-def make_proposer(name: str, replay_log: Optional[str] = None, validator: ValidatorConfig = ValidatorConfig()) -> Proposer:
+def make_proposer(name: str, replay_log: Optional[str] = None, validator: ValidatorConfig = ValidatorConfig(),
+                  llm: Optional[Dict[str, Any]] = None) -> Proposer:
+    """Build a proposer. ``llm`` (for ``name="llm"``): backend, model, url, think, temperature, timeout, retries, seed."""
+    if name == "llm":
+        from .llm import LLMProposer, make_backend
+        cfg = dict(llm or {})
+        if not cfg.get("model"):
+            raise ValueError("--supervisor llm needs --llm_model")
+        retries = int(cfg.pop("retries", 1))
+        constrain = bool(cfg.pop("constrain", True))
+        backend = make_backend(cfg.pop("backend", "ollama"), cfg.pop("model"), cfg.pop("url", None),
+                               **{k: v for k, v in cfg.items() if v is not None})
+        return LLMProposer(backend, validator=validator, max_retries=retries, constrain=constrain)
     if name == "stub":
         return StubProposer()
     if name == "rules":
@@ -429,4 +453,4 @@ def make_proposer(name: str, replay_log: Optional[str] = None, validator: Valida
         if not replay_log:
             raise ValueError("--supervisor replay needs --replay_log")
         return ReplayProposer(replay_log)
-    raise ValueError(f"unknown proposer {name!r} (stub, rules, replay; llm comes next)")
+    raise ValueError(f"unknown proposer {name!r} (stub, rules, replay, llm)")

@@ -99,12 +99,21 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="cpu", help="Torch device (the small MLP policy trains fastest on cpu).")
     p.add_argument("--checkpoint_freq", type=int, default=100_000, help="Save a checkpoint every N steps.")
-    p.add_argument("--supervisor", default="none", choices=("none", "stub", "rules", "replay"),
+    p.add_argument("--supervisor", default="none", choices=("none", "stub", "rules", "replay", "llm"),
                    help="In-loop supervisor proposer (needs a laptime-mode preset such as v2).")
     p.add_argument("--window_steps", type=int, default=250_000, help="Supervisor window length in policy steps.")
     p.add_argument("--probe_runs", type=int, default=8, help="Jittered out-laps in each supervisor probe.")
     p.add_argument("--probe_max_sim_steps", type=int, default=30_000, help="Simulator-step cap per probe lap.")
     p.add_argument("--replay_log", default=None, help="proposals.jsonl to replay with --supervisor replay.")
+    p.add_argument("--llm_backend", default="ollama", choices=("ollama", "openai"),
+                   help="LLM server API for --supervisor llm (openai = any OpenAI-compatible server).")
+    p.add_argument("--llm_model", default=None, help="Model name on the LLM server, e.g. qwen3:8b.")
+    p.add_argument("--llm_url", default=None, help="LLM server base URL (default: the backend's localhost URL).")
+    p.add_argument("--llm_think", default="default", choices=("default", "on", "off"),
+                   help="Ollama thinking mode for reasoning models.")
+    p.add_argument("--llm_temperature", type=float, default=0.2)
+    p.add_argument("--llm_timeout", type=float, default=600.0, help="Seconds per LLM request.")
+    p.add_argument("--llm_retries", type=int, default=1, help="Retries with the validator's errors fed back.")
     for key, value in DEFAULT_HPARAMS.items():
         p.add_argument(f"--{key}", type=type(value), default=None, help=f"PPO {key} (default: {value}).")
     args = p.parse_args(argv)
@@ -112,6 +121,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         p.error("--run_name may contain only letters, digits, '_', '.', '-'")
     if args.timesteps < 1 or args.checkpoint_freq < 1 or args.n_envs < 1:
         p.error("--timesteps, --checkpoint_freq and --n_envs must be >= 1")
+    if args.supervisor == "llm" and not args.llm_model:
+        p.error("--supervisor llm needs --llm_model")
     return args
 
 
@@ -172,8 +183,17 @@ def build_run_spec(args: argparse.Namespace) -> Dict[str, Any]:
         "recommendation": recommendation,
         "supervisor": None if args.supervisor == "none" else {
             "proposer": args.supervisor, "window_steps": args.window_steps, "probe_runs": args.probe_runs,
-            "probe_max_sim_steps": args.probe_max_sim_steps, "replay_log": args.replay_log},
+            "probe_max_sim_steps": args.probe_max_sim_steps, "replay_log": args.replay_log,
+            **({"llm": llm_spec(args)} if args.supervisor == "llm" else {})},
     }
+
+
+def llm_spec(args) -> Dict[str, Any]:
+    """LLM proposer settings recorded in run.json (so a resume must use the same model)."""
+    think = {"default": None, "on": True, "off": False}[args.llm_think]
+    return {"backend": args.llm_backend, "model": args.llm_model, "url": args.llm_url, "think": think,
+            "temperature": args.llm_temperature, "timeout": args.llm_timeout, "retries": args.llm_retries,
+            "seed": args.seed}
 
 
 #: Defaults for spec keys that older run.json files do not have.
@@ -316,7 +336,7 @@ def main(argv: Optional[Sequence[str]] = None) -> Path:
         from ..in_loop.supervisor import SupervisorCallback, make_proposer
         sv = spec["supervisor"]
         supervisor = SupervisorCallback(
-            load_track(args.track), env_config, make_proposer(sv["proposer"], sv["replay_log"]), str(run_dir),
+            load_track(args.track), env_config, make_proposer(sv["proposer"], sv["replay_log"], llm=sv.get("llm")), str(run_dir),
             window_steps=sv["window_steps"], probe_runs=sv["probe_runs"], probe_max_sim_steps=sv["probe_max_sim_steps"],
             source_model=prefix, seed=args.seed, verbose=1)
         callback = CallbackList([callback, supervisor])
