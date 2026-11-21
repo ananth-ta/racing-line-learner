@@ -72,6 +72,26 @@ class TestLeverStatesAndPrompt(unittest.TestCase):
                        "window 2: jitter_coef 0.05 -> 12.5", "smaller corrections"):
             self.assertIn(needle, text)
 
+    def test_prompt_v2_adds_measured_magnitudes(self):
+        from racing_line_learner.in_loop.llm import SYSTEM_PROMPTS
+        levers = lever_states(CURRENT, [WEAVING, THROTTLE], {}, window=3)
+        v1 = build_user_prompt(REPORT, [WEAVING], levers, 3)
+        v2 = build_user_prompt(REPORT, [WEAVING], levers, 3, version="v2")
+        self.assertNotIn("measured:", v1)
+        self.assertIn("effective from about 10", v2)
+        self.assertIn("reward hacking", v2)
+        self.assertIn("no effect at all while overspeed_coef is 0", v2)
+        self.assertNotIn("0.15", v2)                               # no ineffective values for models to copy
+        self.assertNotEqual(SYSTEM_PROMPTS["v1"], SYSTEM_PROMPTS["v2"])
+        self.assertIn("Size matters", SYSTEM_PROMPTS["v2"])
+        backend = FakeBackend(reply({}, {}))
+        p = LLMProposer(backend, prompt="v2")
+        p.propose(REPORT, [WEAVING], dict(CURRENT), {}, 3, CTX)
+        self.assertIn("Size matters", backend.calls[0]["messages"][0]["content"])
+        self.assertEqual(p.last_meta["prompt"], "v2")
+        with self.assertRaises(ValueError):
+            LLMProposer(FakeBackend(), prompt="v9").propose(REPORT, [WEAVING], dict(CURRENT), {}, 3, CTX)
+
     def test_schema_constrained_and_loose(self):
         levers = lever_states(CURRENT, [WEAVING], {}, window=3)
         sch = response_schema(levers)
@@ -80,6 +100,80 @@ class TestLeverStatesAndPrompt(unittest.TestCase):
         self.assertAlmostEqual(props["jitter_coef"]["maximum"], 0.05 + 0.25 * (50 - 0.01), places=4)
         self.assertEqual(sch["properties"]["grounds"]["properties"]["jitter_coef"]["items"]["enum"], ["weaving"])
         self.assertNotIn("properties", response_schema(levers, constrain=False)["properties"]["changes"])
+
+
+GRIP_FINDING = {"id": "speed_pinned_at_max", "severity": "medium", "message": "speed pinned", "waypoints": None,
+                "facts": {}}
+
+
+def steps(**asks):
+    return {k: {"direction": d, "step": z} for k, (d, z) in asks.items()}
+
+
+class TestInertAndSteps(unittest.TestCase):
+    def test_grip_margin_locked_while_overspeed_is_off(self):
+        st = {s.key: s for s in lever_states(dict(CURRENT, overspeed_coef=0.0), [GRIP_FINDING], {}, 3)}
+        self.assertFalse(st["grip_margin"].available)
+        self.assertIn("no effect while overspeed_coef is 0", st["grip_margin"].lock_reason)
+        self.assertTrue(st["overspeed_coef"].available)
+        on = {s.key: s for s in lever_states(dict(CURRENT, overspeed_coef=0.5), [GRIP_FINDING], {}, 3)}
+        self.assertTrue(on["grip_margin"].available)
+
+    def test_v3_prompt_and_schema(self):
+        from racing_line_learner.in_loop.llm import SYSTEM_PROMPTS
+        levers = lever_states(dict(CURRENT, throttle_change_coef=0.0), [WEAVING, THROTTLE], {}, window=3)
+        text = build_user_prompt(REPORT, [WEAVING], levers, 3, version="v3")
+        self.assertIn("full step", text)
+        self.assertIn("jitter_coef: 0.05 | 0.01..50 | 12.5 |", text)
+        self.assertIn("effective from about 10", text)                     # keeps v2's magnitudes
+        self.assertIn('"direction": "raise"', SYSTEM_PROMPTS["v3"])
+        self.assertNotIn("Give the new absolute value", SYSTEM_PROMPTS["v3"])
+        props = response_schema(levers, steps=True)["properties"]["changes"]["properties"]
+        self.assertEqual(props["jitter_coef"]["properties"]["step"]["enum"], ["quarter", "half", "full"])
+        self.assertEqual(props["throttle_change_coef"]["properties"]["direction"]["enum"], ["raise"])  # at 0
+        loose = response_schema(levers, constrain=False, steps=True)["properties"]["changes"]
+        self.assertEqual(loose["additionalProperties"]["required"], ["direction", "step"])
+
+    def test_v3_reply_becomes_values(self):
+        backend = FakeBackend(reply(steps(jitter_coef=("raise", "full")), {"jitter_coef": ["weaving"]}))
+        p = LLMProposer(backend, prompt="v3")
+        doc = p.propose(REPORT, [WEAVING], dict(CURRENT), {}, 3, CTX)
+        self.assertAlmostEqual(doc["changes"]["jitter_coef"], 0.05 + 0.25 * (50 - 0.01), places=5)
+        self.assertEqual(p.last_meta["attempts"][0]["steps"], steps(jitter_coef=("raise", "full")))
+        self.assertEqual(p.last_meta["attempts"][0]["errors"], [])
+        half = LLMProposer(FakeBackend(reply(steps(steering_penalty_w=("lower", "half")),
+                                             {"steering_penalty_w": ["weaving"]})), prompt="v3")
+        doc = half.propose(REPORT, [WEAVING], dict(CURRENT), {}, 3, CTX)
+        self.assertAlmostEqual(doc["changes"]["steering_penalty_w"], CURRENT["steering_penalty_w"] - 0.5 * 0.625)
+
+    def test_v3_clips_to_range_and_rejects_moves_at_the_limit(self):
+        from racing_line_learner.in_loop.llm import steps_to_values
+        levers = lever_states(dict(CURRENT, throttle_change_coef=0.9), [THROTTLE], {}, window=3)
+        vals, errs = steps_to_values(steps(throttle_change_coef=("raise", "full")), levers)
+        self.assertEqual((vals, errs), ({"throttle_change_coef": 1.0}, []))       # clipped at the top of 0..1
+        levers = lever_states(dict(CURRENT, throttle_change_coef=0.0), [THROTTLE], {}, window=3)
+        vals, errs = steps_to_values(steps(throttle_change_coef=("lower", "half")), levers)
+        self.assertEqual(vals, {})
+        self.assertIn("lower limit", errs[0])
+        vals, errs = steps_to_values({"jitter_coef": 12.0}, levers)               # a v2-style number
+        self.assertIn("give {", errs[0])
+
+    def test_v3_bad_step_is_retried(self):
+        backend = FakeBackend(reply({"jitter_coef": 12.0}, {"jitter_coef": ["weaving"]}),
+                              reply(steps(jitter_coef=("raise", "quarter")), {"jitter_coef": ["weaving"]}))
+        p = LLMProposer(backend, prompt="v3")
+        doc = p.propose(REPORT, [WEAVING], dict(CURRENT), {}, 3, CTX)
+        self.assertEqual(len(p.last_meta["attempts"]), 2)
+        self.assertAlmostEqual(doc["changes"]["jitter_coef"], 0.05 + 0.25 * 12.4975, places=5)
+
+    def test_inert_grip_margin_is_rejected_and_fed_back(self):
+        cur = dict(CURRENT, overspeed_coef=0.0)
+        backend = FakeBackend(reply({"grip_margin": 0.9}, {"grip_margin": ["speed_pinned_at_max"]}),
+                              reply({"overspeed_coef": 0.5}, {"overspeed_coef": ["speed_pinned_at_max"]}))
+        p = LLMProposer(backend, constrain=False)
+        doc = p.propose(REPORT, [GRIP_FINDING], cur, {}, 3, CTX)
+        self.assertEqual(doc["changes"], {"overspeed_coef": 0.5})
+        self.assertIn("no effect while overspeed_coef is 0", backend.calls[1]["messages"][-1]["content"])
 
 
 class TestExtractJson(unittest.TestCase):
@@ -106,6 +200,7 @@ class TestBackends(unittest.TestCase):
         self.assertIs(seen["payload"]["think"], False)
         self.assertFalse(seen["payload"]["stream"])
         self.assertEqual(seen["payload"]["options"]["seed"], 1)
+        self.assertEqual(seen["payload"]["keep_alive"], "2h")
         self.assertEqual((r.text, r.thinking, r.prompt_tokens, r.completion_tokens), ("{}", "hmm", 7, 3))
 
     def test_openai_payload_and_reply(self):
@@ -204,6 +299,21 @@ class TestBench(unittest.TestCase):
         self.assertEqual(c3["history"]["throttle_change_coef"]["outcome"], OUTCOME_IMPROVED)
         self.assertEqual([d["window"] for d in c3["recent"]], [1, 2])
 
+    def test_redetect_adds_new_findings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = _write_run(tmp)
+            for rep_path in sorted((run / "telemetry").glob("w*.json")):    # make the reports detector-complete
+                rep = json.loads(rep_path.read_text())
+                rep.update(speed={"floor": 2.0, "max": 20.0, "pinned_at_floor_share": 0.0, "pinned_at_max_share": 0.0,
+                                  "floor_limited_lap_time_s": 200.0},
+                           crash_hotspots=[], steering={"saturation_share": 0.0}, reward_per_step={}, segments=[],
+                           terminations={}, probe=dict(REPORT["probe"], completion_rate=0.125, failures_at=[]))
+                rep_path.write_text(json.dumps(rep))
+            old = {c["window"]: c for c in bench.build_cases([str(run)])}
+            new = {c["window"]: c for c in bench.build_cases([str(run)], redetect=True)}
+        self.assertNotIn("probe_failures", [f["id"] for f in old[1]["findings"]])
+        self.assertIn("probe_failures", [f["id"] for f in new[1]["findings"]])
+
     def test_direction(self):
         cur = {"jitter_coef": 1.0, "grip_margin": 1.0}
         self.assertTrue(bench.direction_ok({"changes": {"jitter_coef": 2.0}, "grounds": {"jitter_coef": ["weaving"]}}, cur))
@@ -283,6 +393,10 @@ class TestCli(unittest.TestCase):
                                           "--llm_model", "qwen3:8b", "--llm_think", "off"]))
         self.assertEqual(spec["supervisor"]["llm"]["model"], "qwen3:8b")
         self.assertIs(spec["supervisor"]["llm"]["think"], False)
+        self.assertEqual(spec["supervisor"]["llm"]["prompt"], "v2")
+        effort = build_run_spec(parse_args(["--run_name", "r", "--preset", "v2", "--supervisor", "llm",
+                                            "--llm_model", "gpt-oss:120b", "--llm_think", "high"]))
+        self.assertEqual(effort["supervisor"]["llm"]["think"], "high")
         rules = build_run_spec(parse_args(["--run_name", "r", "--preset", "v2", "--supervisor", "rules"]))
         self.assertNotIn("llm", rules["supervisor"])            # older supervised runs still resume
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
@@ -295,6 +409,9 @@ class TestCli(unittest.TestCase):
         p = make_proposer("llm", llm={"backend": "ollama", "model": "m", "think": True, "retries": 0,
                                       "temperature": 0.1, "timeout": 5.0, "seed": 0, "url": None})
         self.assertEqual((p.name, p.max_retries, p.backend.think, p.backend.model), ("llm", 0, True, "m"))
+        self.assertEqual(p.prompt, "v1")                         # runs recorded before prompt versions: v1
+        p2 = make_proposer("llm", llm={"backend": "ollama", "model": "m", "prompt": "v2"})
+        self.assertEqual(p2.prompt, "v2")
 
 
 @requires_sb3

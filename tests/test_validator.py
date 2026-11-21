@@ -142,3 +142,34 @@ class TestConfig(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestInertChanges(unittest.TestCase):
+    """grip_margin only scales the overspeed penalty, so moving it while overspeed_coef stays 0 is rejected."""
+
+    def v2(self, changes, grounds):
+        return parse_recommendation({"schema_version": 2, "source_model": "m", "track": "cota", "changes": changes,
+                                     "grounds": grounds}, N_WP)
+
+    def setUp(self):
+        self.cur = default_values(2)
+        self.findings = [{"id": "speed_pinned_at_max"}]
+
+    def test_grip_alone_rejected_while_overspeed_off(self):
+        res = validate_proposal(self.v2({"grip_margin": 0.9}, {"grip_margin": ["speed_pinned_at_max"]}),
+                                self.cur, 3, findings=self.findings)
+        self.assertFalse(res.accepted)
+        self.assertIn("no effect while overspeed_coef is 0", " ".join(res.errors))
+
+    def test_grip_with_overspeed_raised_together_or_already_on(self):
+        g = ["speed_pinned_at_max"]
+        both = self.v2({"grip_margin": 0.9, "overspeed_coef": 0.5}, {"grip_margin": g, "overspeed_coef": g})
+        self.assertTrue(validate_proposal(both, self.cur, 3, findings=self.findings).accepted)
+        on = dict(self.cur, overspeed_coef=0.5)
+        self.assertTrue(validate_proposal(self.v2({"grip_margin": 0.9}, {"grip_margin": g}), on, 3,
+                                          findings=self.findings).accepted)
+
+    def test_switch_off_for_ablation(self):
+        res = validate_proposal(self.v2({"grip_margin": 0.9}, {"grip_margin": ["speed_pinned_at_max"]}), self.cur, 3,
+                                config=ValidatorConfig(require_effect=False), findings=self.findings)
+        self.assertTrue(res.accepted, res.errors)

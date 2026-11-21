@@ -26,6 +26,9 @@ WEAVING_REVERSALS_PER_S = 4.0
 WEAVING_LATERAL_STD_M = 0.25
 THROTTLE_CHANGE_PER_STEP = 0.3       # m/s per policy step (7.5 m/s^2)
 INCONSISTENT_LINE_STD_M = 0.6        # lateral spread in a corner segment
+# Probe failures: the deterministic policy fails at least half its probe laps. Above that, checkpoint noise alone
+# (0-8/8 between unchanged 100k checkpoints) makes a "failure" finding unreliable.
+PROBE_COMPLETION_MAX = 0.5
 
 #: Which whitelisted levers (schema v2 keys; v1 keys in brackets where they differ) can address each finding.
 #: Used by the grounding check: a proposed change must cite a current finding whose lever set contains it.
@@ -42,6 +45,7 @@ LEVERS = {
     "weaving": ("jitter_coef", "steering_penalty_w"),
     "throttle_jitter": ("throttle_change_coef",),
     "inconsistent_line": ("spawn_corner_mix", "jitter_coef", "curriculum"),
+    "probe_failures": ("spawn_corner_mix", "overspeed_coef", "grip_margin"),
 }
 
 
@@ -123,10 +127,25 @@ def detect(report: Dict[str, Any]) -> List[Dict[str, Any]]:
             s["waypoints"], time_share=share, max_speed=s["max_speed"], grip_limit=s["grip_limit_min"],
             headroom=round(headroom, 2)))
 
+    findings.extend(_probe_failure_findings(report))
     findings.extend(_smoothness_findings(report))
 
     order = {"high": 0, "medium": 1, "low": 2}
     return sorted(findings, key=lambda f: order[f["severity"]])
+
+
+def _probe_failure_findings(report: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The deterministic policy fails most probe laps: reliability, not smoothness, is the problem."""
+    probe = report.get("probe") or {}
+    rate, n = probe.get("completion_rate"), probe.get("episodes") or 0
+    if rate is None or not n or rate > PROBE_COMPLETION_MAX:
+        return []
+    fails = probe.get("failures_at") or []
+    msg = f"the deterministic probe completes only {round(rate * n)}/{n} laps"
+    if fails:
+        msg += "; failed laps end at waypoints " + ", ".join(f"{f['waypoint']} (x{f['count']})" for f in fails[:4])
+    # Failure points can be scattered round the lap, so no single waypoint range is claimed.
+    return [_finding("probe_failures", "high", msg, None, completion_rate=rate, episodes=n, failures_at=fails[:4])]
 
 
 def _smoothness_findings(report: Dict[str, Any]) -> List[Dict[str, Any]]:

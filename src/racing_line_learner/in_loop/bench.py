@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from ..schema import WHITELIST_V2
-from .llm import LLMProposer, lever_states, make_backend, recent_decisions
+from .llm import PROMPT_VERSIONS, LLMProposer, lever_states, make_backend, recent_decisions
 from .validator import (OUTCOME_PENDING, OUTCOME_ROLLED_BACK, KeyHistory, ValidatorConfig)
 
 #: Direction a lever should move to address a finding (+1 raise, -1 lower). Pairs not listed are not scored.
@@ -57,6 +57,7 @@ EXPECTED_DIRECTION: Dict[str, Dict[str, int]] = {
     "steering_saturated": {"steering_penalty_w": +1, "jitter_coef": +1},
     "under_driven_segment": {"time_cost": +1, "progress_coef": +1, "lap_bonus": +1, "grip_margin": +1},
     "inconsistent_line": {"spawn_corner_mix": +1, "jitter_coef": +1},
+    "probe_failures": {"spawn_corner_mix": +1, "overspeed_coef": +1, "grip_margin": -1},
 }
 
 DEFAULT_ENT_COEF = 0.01
@@ -104,8 +105,14 @@ def _replay_state(log_path: Path, base: Dict[str, float], window: int):
     return current, history
 
 
-def build_cases(run_dirs: Sequence[str]) -> List[Dict[str, Any]]:
-    """One case per saved telemetry window of each run (windows with a report)."""
+def build_cases(run_dirs: Sequence[str], redetect: bool = False) -> List[Dict[str, Any]]:
+    """One case per saved telemetry window of each run (windows with a report).
+
+    ``redetect`` reruns today's detectors on each saved report instead of using the findings saved with it, so
+    cases pick up detectors added since the report was written.
+    """
+    if redetect:
+        from .detectors import detect
     cases = []
     for run in run_dirs:
         run = Path(run)
@@ -117,6 +124,8 @@ def build_cases(run_dirs: Sequence[str]) -> List[Dict[str, Any]]:
         log = run / "proposals.jsonl"
         for path in reports:
             report = json.loads(path.read_text())
+            if redetect:
+                report["findings"] = detect(report)
             window = int(report.get("window", 0))
             if log.exists():
                 current, history = _replay_state(log, base, window)
@@ -322,12 +331,14 @@ def _proposer_from_args(args, validator):
     if args.proposer == "rules":
         from .supervisor import RuleBasedProposer
         return RuleBasedProposer(validator)
-    think = {"default": None, "on": True, "off": False}[args.think]
+    from ..train.ppo import think_value
+    think = think_value(args.think)
     kwargs: Dict[str, Any] = {"temperature": args.temperature, "timeout": args.timeout, "seed": args.seed}
     if args.backend == "ollama":
         kwargs.update(think=think, num_ctx=args.num_ctx)
     backend = make_backend(args.backend, args.model, args.url, **kwargs)
-    return LLMProposer(backend, validator=validator, max_retries=args.retries, constrain=not args.unconstrained)
+    return LLMProposer(backend, validator=validator, max_retries=args.retries, constrain=not args.unconstrained,
+                       prompt=args.prompt)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
@@ -336,6 +347,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     b = sub.add_parser("build", help="Build benchmark cases from run directories.")
     b.add_argument("--runs", nargs="+", required=True)
     b.add_argument("--out", required=True)
+    b.add_argument("--redetect", action="store_true", help="Rerun the current detectors on each saved report.")
     sn = sub.add_parser("snapshot", help="Telemetry report(s) from saved checkpoints (needs the simulator and SB3).")
     sn.add_argument("--checkpoints", nargs="+", required=True)
     sn.add_argument("--out", required=True, help="Root folder; one run-like folder per checkpoint.")
@@ -349,19 +361,21 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     r.add_argument("--backend", default="ollama", choices=("ollama", "openai"))
     r.add_argument("--model", default=None)
     r.add_argument("--url", default=None)
-    r.add_argument("--think", default="default", choices=("default", "on", "off"))
+    r.add_argument("--think", default="default", choices=("default", "on", "off", "low", "medium", "high"))
     r.add_argument("--temperature", type=float, default=0.2)
     r.add_argument("--timeout", type=float, default=600.0)
     r.add_argument("--num_ctx", type=int, default=8192)
     r.add_argument("--retries", type=int, default=1)
     r.add_argument("--seed", type=int, default=0)
     r.add_argument("--repeats", type=int, default=1)
+    r.add_argument("--prompt", default="v1", choices=PROMPT_VERSIONS,
+                   help="Prompt version (v2: measured magnitudes; v3: v2 with direction-and-step replies).")
     r.add_argument("--unconstrained", action="store_true", help="Ablation: send a loose schema (any keys, values).")
     r.add_argument("--limit", type=int, default=None, help="Only the first N cases (smoke test).")
     args = p.parse_args(argv)
 
     if args.cmd == "build":
-        cases = build_cases(args.runs)
+        cases = build_cases(args.runs, redetect=args.redetect)
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(json.dumps(cases, indent=1))
         print(f"{len(cases)} cases -> {args.out}")
@@ -387,6 +401,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         for row in rows:
             f.write(json.dumps(row) + "\n")
     summary = {"proposer": args.proposer, "backend": args.backend, "model": args.model, "think": args.think,
+               "prompt": args.prompt,
                "constrained": not args.unconstrained, "repeats": args.repeats, "cases": len(cases),
                **summarize(rows)}
     (out / "summary.json").write_text(json.dumps(summary, indent=1))

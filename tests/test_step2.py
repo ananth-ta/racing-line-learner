@@ -125,6 +125,21 @@ class TestSmoothnessTelemetry(unittest.TestCase):
                       "segments": []}
         self.assertNotIn("weaving", [f["id"] for f in detect(r)])                # deterministic driving is smooth
 
+    def test_probe_failures(self):
+        r = self.straight_run(lambda i: 0.0, lambda i: 12.0, lambda i: 0.0)
+        r["probe"] = {"episodes": 8, "completion_rate": 0.25, "failures_at": [{"waypoint": 117, "count": 5},
+                                                                               {"waypoint": 30, "count": 1}],
+                      "smoothness": {}, "segments": []}
+        f = [x for x in detect(r) if x["id"] == "probe_failures"]
+        self.assertEqual(len(f), 1)
+        self.assertEqual(f[0]["severity"], "high")
+        self.assertIn("2/8", f[0]["message"])
+        self.assertIn("117 (x5)", f[0]["message"])
+        r["probe"]["completion_rate"] = 0.625                                     # 5/8: within checkpoint noise
+        self.assertNotIn("probe_failures", [x["id"] for x in detect(r)])
+        del r["probe"]
+        self.assertNotIn("probe_failures", [x["id"] for x in detect(r)])
+
     def test_inconsistent_line_in_a_corner(self):
         c = TelemetryCollector(COTA, V2)
         for i in range(60):

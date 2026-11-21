@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..config import EnvConfig, apply_recommendation, get_preset, output_root, parse_overrides, save_json
+from ..in_loop.llm import PROMPT_VERSIONS
 from ..schema import load_recommendation
 
 DEFAULT_HPARAMS: Dict[str, Any] = {
@@ -109,11 +110,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="LLM server API for --supervisor llm (openai = any OpenAI-compatible server).")
     p.add_argument("--llm_model", default=None, help="Model name on the LLM server, e.g. qwen3:8b.")
     p.add_argument("--llm_url", default=None, help="LLM server base URL (default: the backend's localhost URL).")
-    p.add_argument("--llm_think", default="default", choices=("default", "on", "off"),
-                   help="Ollama thinking mode for reasoning models.")
+    p.add_argument("--llm_think", default="default", choices=THINK_CHOICES,
+                   help="Ollama thinking mode: on/off, or low/medium/high for reasoning-effort models (gpt-oss).")
     p.add_argument("--llm_temperature", type=float, default=0.2)
     p.add_argument("--llm_timeout", type=float, default=600.0, help="Seconds per LLM request.")
     p.add_argument("--llm_retries", type=int, default=1, help="Retries with the validator's errors fed back.")
+    p.add_argument("--llm_prompt", default="v2", choices=PROMPT_VERSIONS,
+                   help="Prompt version: v2 adds the measured effective lever magnitudes; v3 also asks for "
+                        "a direction and step size per lever instead of a value.")
     for key, value in DEFAULT_HPARAMS.items():
         p.add_argument(f"--{key}", type=type(value), default=None, help=f"PPO {key} (default: {value}).")
     args = p.parse_args(argv)
@@ -188,12 +192,20 @@ def build_run_spec(args: argparse.Namespace) -> Dict[str, Any]:
     }
 
 
+THINK_CHOICES = ("default", "on", "off", "low", "medium", "high")
+
+
+def think_value(choice: str):
+    """CLI thinking choice -> Ollama ``think`` value (None leaves the model's default)."""
+    return {"default": None, "on": True, "off": False}.get(choice, choice)
+
+
 def llm_spec(args) -> Dict[str, Any]:
     """LLM proposer settings recorded in run.json (so a resume must use the same model)."""
-    think = {"default": None, "on": True, "off": False}[args.llm_think]
+    think = think_value(args.llm_think)
     return {"backend": args.llm_backend, "model": args.llm_model, "url": args.llm_url, "think": think,
             "temperature": args.llm_temperature, "timeout": args.llm_timeout, "retries": args.llm_retries,
-            "seed": args.seed}
+            "seed": args.seed, "prompt": args.llm_prompt}
 
 
 #: Defaults for spec keys that older run.json files do not have.

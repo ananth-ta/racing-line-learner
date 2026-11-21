@@ -19,9 +19,13 @@ adds the checks that depend on the *training state*:
   one finding present in the current telemetry report whose lever set
   (:data:`racing_line_learner.in_loop.detectors.LEVERS`) contains that key.
   This blocks changes justified by a hallucinated or irrelevant diagnosis.
+* **No inert changes** (schema v2): a lever that only acts through another
+  term cannot be changed while that term is off (:data:`ACTS_THROUGH`):
+  ``grip_margin`` only scales the overspeed penalty, so moving it while
+  ``overspeed_coef`` is 0 (and not raised in the same proposal) wastes a window.
 
 Each check can be switched off (``max_step_fraction=None``,
-``cooldown_windows=0``, ``require_grounding=False``) to run them as ablations.
+``cooldown_windows=0``, ``require_grounding=False``, ``require_effect=False``) to run them as ablations.
 """
 
 from dataclasses import dataclass, field
@@ -49,6 +53,9 @@ OUTCOMES = frozenset({OUTCOME_PENDING, OUTCOME_IMPROVED, OUTCOME_NEUTRAL, OUTCOM
 
 _EPS = 1e-9
 
+#: Levers that act only through another reward term: changing the key has no effect while that term is 0.
+ACTS_THROUGH: Dict[str, str] = {"grip_margin": "overspeed_coef"}
+
 
 @dataclass(frozen=True)
 class ValidatorConfig:
@@ -58,6 +65,7 @@ class ValidatorConfig:
     cooldown_windows: int = 1
     rollback_cooldown_windows: int = 2
     require_grounding: bool = True
+    require_effect: bool = True
 
     def __post_init__(self) -> None:
         if self.max_step_fraction is not None and not 0.0 < self.max_step_fraction <= 1.0:
@@ -96,6 +104,12 @@ def max_step(key: str, config: ValidatorConfig, version: int = 1) -> Optional[fl
         return None
     spec = WHITELISTS[version][key]
     return config.max_step_fraction * (spec.high - spec.low)
+
+
+def step_unit(key: str, config: ValidatorConfig, version: int = 2) -> float:
+    """One full step for ``key``: the per-window cap, or a quarter of the range for an uncapped key."""
+    spec = WHITELISTS[version][key]
+    return max_step(key, config, version) or 0.25 * (spec.high - spec.low)
 
 
 def touched_keys(rec: Recommendation) -> List[str]:
@@ -177,7 +191,29 @@ def validate_proposal(
     if rec.schema_version >= 2 and config.require_grounding and rec.changes:
         errors.extend(grounding_errors(rec, findings))
 
+    if rec.schema_version >= 2 and config.require_effect:
+        errors.extend(inert_errors(rec.changes, current))
+
     return ValidationResult(accepted=not errors, errors=errors)
+
+
+def inert_reason(key: str, values: Mapping[str, float]) -> Optional[str]:
+    """Why changing ``key`` has no effect under ``values`` (``None`` if it does have one)."""
+    through = ACTS_THROUGH.get(key)
+    if through is not None and through in values and float(values[through]) <= _EPS:
+        return f"no effect while {through} is 0 (it only scales that penalty)"
+    return None
+
+
+def inert_errors(changes: Mapping[str, float], current: Mapping[str, float]) -> List[str]:
+    """Changes that cannot act: their lever works through a term that stays 0 after this proposal."""
+    after = {**current, **changes}
+    errors = []
+    for key in sorted(changes):
+        reason = inert_reason(key, after)
+        if reason:
+            errors.append(f"{key}: {reason}")
+    return errors
 
 
 def grounding_errors(rec: Recommendation, findings: Optional[List[Dict]]) -> List[str]:

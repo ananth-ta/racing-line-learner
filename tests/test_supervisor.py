@@ -79,6 +79,12 @@ class TestRuleBasedProposer(unittest.TestCase):
         raw, _ = self.propose(["weaving"], history=hist)
         self.assertIn("jitter_coef", raw["changes"])
 
+    def test_probe_failures_come_first(self):
+        raw, _ = self.propose(["weaving", "probe_failures", "throttle_jitter"])
+        self.assertEqual(list(raw["changes"])[0], "spawn_corner_mix")
+        self.assertEqual(raw["grounds"]["spawn_corner_mix"], ["probe_failures"])
+        self.assertEqual(len(raw["changes"]), 2)
+
     def test_nothing_to_do(self):
         self.assertIsNone(self.propose([])[0])
 

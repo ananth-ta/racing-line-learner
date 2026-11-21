@@ -39,7 +39,7 @@ from ..schema import WHITELIST_V2, SchemaError, parse_recommendation
 from .detectors import LEVERS, detect
 from .telemetry import TelemetryCollector, summarize_probe
 from .validator import (OUTCOME_IMPROVED, OUTCOME_NEUTRAL, OUTCOME_PENDING, OUTCOME_ROLLED_BACK, KeyHistory,
-                        ValidatorConfig, max_step, validate_proposal)
+                        ValidatorConfig, step_unit, validate_proposal)
 
 SCHEMA = 2
 ALGO_KEYS = ("ent_coef",)
@@ -117,6 +117,7 @@ class StubProposer(Proposer):
 #: Rule-based tuner: for each finding, the lever to move and in which direction (+1 raise, -1 lower).
 #: Ordered by priority. Step size is the validator's per-window cap, so a rule never proposes an illegal move.
 RULES = (
+    ("probe_failures", "spawn_corner_mix", +1),     # reliability first: corner practice changes no reward weight
     ("weaving", "jitter_coef", +1),
     ("throttle_jitter", "throttle_change_coef", +1),
     ("crash_hotspot", "overspeed_coef", +1),
@@ -149,7 +150,7 @@ class RuleBasedProposer(Proposer):
             if h is not None and _locked(h, window, self.validator):
                 continue
             spec = WHITELIST_V2[key]
-            step = max_step(key, self.validator, SCHEMA) or 0.25 * (spec.high - spec.low)
+            step = step_unit(key, self.validator, SCHEMA)
             new = min(max(current[key] + direction * step, spec.low), spec.high)
             if abs(new - current[key]) < 1e-9:
                 continue                                    # already at its limit
@@ -434,7 +435,8 @@ def _probe_brief(p: Dict[str, Any]) -> Dict[str, Any]:
 
 def make_proposer(name: str, replay_log: Optional[str] = None, validator: ValidatorConfig = ValidatorConfig(),
                   llm: Optional[Dict[str, Any]] = None) -> Proposer:
-    """Build a proposer. ``llm`` (for ``name="llm"``): backend, model, url, think, temperature, timeout, retries, seed."""
+    """Build a proposer. ``llm`` (for ``name="llm"``): backend, model, url, think, temperature, timeout, retries, seed,
+    prompt (v1/v2/v3)."""
     if name == "llm":
         from .llm import LLMProposer, make_backend
         cfg = dict(llm or {})
@@ -442,9 +444,10 @@ def make_proposer(name: str, replay_log: Optional[str] = None, validator: Valida
             raise ValueError("--supervisor llm needs --llm_model")
         retries = int(cfg.pop("retries", 1))
         constrain = bool(cfg.pop("constrain", True))
+        prompt = cfg.pop("prompt", "v1")          # runs recorded before prompt versions existed used v1
         backend = make_backend(cfg.pop("backend", "ollama"), cfg.pop("model"), cfg.pop("url", None),
                                **{k: v for k, v in cfg.items() if v is not None})
-        return LLMProposer(backend, validator=validator, max_retries=retries, constrain=constrain)
+        return LLMProposer(backend, validator=validator, max_retries=retries, constrain=constrain, prompt=prompt)
     if name == "stub":
         return StubProposer()
     if name == "rules":
