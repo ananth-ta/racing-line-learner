@@ -60,6 +60,8 @@ run_seed() {
     local seed=$1 name; name=$(run_name "$seed")
     local dir="$OUT/runs/$name"
     if [ -f "$dir/DONE" ]; then echo "[arm] $name already finished"; return 0; fi
+    if pgrep -f -- "--run_name $name " > /dev/null; then     # e.g. the launch cell was run twice
+        echo "[arm] $name is already running; not starting a second copy"; return 0; fi
     if [ "$ARM" = llm ] && [ "${ALLOW_SPLIT:-0}" != 1 ]; then
         for other in "$OUT"/runs/cota_llm_*_s"$seed"; do
             [ -d "$other" ] && [ "$other" != "$dir" ] && [ ! -f "$other/DONE" ] && {
