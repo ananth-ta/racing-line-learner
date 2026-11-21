@@ -332,6 +332,10 @@ def extract_json(text: str) -> Dict[str, Any]:
 Transport = Callable[[str, Dict[str, Any], float, Dict[str, str]], Dict[str, Any]]
 
 
+class ServerError(RuntimeError):
+    """The LLM server answered with an HTTP error (model failed to load, out of memory, unknown model, ...)."""
+
+
 def http_post_json(url: str, payload: Dict[str, Any], timeout: float, headers: Dict[str, str]) -> Dict[str, Any]:
     req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST",
                                  headers={"Content-Type": "application/json", **headers})
@@ -340,7 +344,7 @@ def http_post_json(url: str, payload: Dict[str, Any], timeout: float, headers: D
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
         body = exc.read().decode(errors="replace")[:500]
-        raise RuntimeError(f"HTTP {exc.code} from {url}: {body}") from exc
+        raise ServerError(f"HTTP {exc.code} from {url}: {body}") from exc
 
 
 @dataclass

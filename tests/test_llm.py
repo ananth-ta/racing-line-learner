@@ -343,6 +343,28 @@ class TestBench(unittest.TestCase):
         self.assertEqual(bench.summarize(rule_rows)["rules_overlap"], 1.0)
 
     @unittest.skipUnless(HAVE_SB3, "rule-based reference needs stable_baselines3")
+    def test_dead_server_aborts_instead_of_scoring_zeros(self):
+        import urllib.error
+        from racing_line_learner.in_loop.llm import ServerError
+
+        class Dead:
+            name, model, calls = "dead", "m", 0
+
+            def __init__(self, exc):
+                self.exc = exc
+
+            def chat(self, messages, schema):
+                Dead.calls += 1
+                raise self.exc
+
+        cases = [dict(id=f"c{i}", report=REPORT, findings=[WEAVING], current=dict(CURRENT), window=3, history={},
+                      track="cota", recent=[]) for i in range(5)]
+        for exc in (urllib.error.URLError("refused"), ServerError("HTTP 500: model failed to load")):
+            with self.assertRaises(bench.BenchAborted):
+                bench.run(cases, LLMProposer(Dead(exc)), log=lambda *_: None)
+        rows = bench.run(cases[:2], LLMProposer(Dead(urllib.error.URLError("x"))), log=lambda *_: None)
+        self.assertEqual(len(rows), 2)                     # fewer than 3 in a row: scored as failures
+
     def test_useful_metric_ranks_bad_proposers_low(self):
         with tempfile.TemporaryDirectory() as tmp:
             cases = bench.build_cases([str(_write_run(tmp))])

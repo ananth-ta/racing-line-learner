@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from ..schema import WHITELIST_V2
-from .llm import PROMPT_VERSIONS, LLMProposer, lever_states, make_backend, recent_decisions
+from .llm import PROMPT_VERSIONS, LLMProposer, ServerError, lever_states, make_backend, recent_decisions
 from .validator import (OUTCOME_PENDING, OUTCOME_ROLLED_BACK, KeyHistory, ValidatorConfig)
 
 #: Direction a lever should move to address a finding (+1 raise, -1 lower). Pairs not listed are not scored.
@@ -304,9 +304,16 @@ def summarize(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 # Running
 # --------------------------------------------------------------------------- #
 
+class BenchAborted(RuntimeError):
+    """The server failed several cases in a row: stop instead of scoring a dead server as a bad model."""
+
+
 def run(cases: List[Dict[str, Any]], proposer, repeats: int = 1,
-        validator: ValidatorConfig = ValidatorConfig(), log=print) -> List[Dict[str, Any]]:
+        validator: ValidatorConfig = ValidatorConfig(), log=print, max_server_errors: int = 3) -> List[Dict[str, Any]]:
+    """Score ``proposer`` on every case. Raises :class:`BenchAborted` after ``max_server_errors`` consecutive
+    connection, timeout or HTTP errors (a single slow reply is scored as a failure and the run goes on)."""
     rows = []
+    server_errors = 0
     for rep in range(repeats):
         for case in cases:
             if hasattr(proposer, "last_meta"):
@@ -318,6 +325,14 @@ def run(cases: List[Dict[str, Any]], proposer, repeats: int = 1,
                                        case["window"], _context(case))
             except Exception as exc:               # LLMError, HTTP errors, timeouts: score the failure, keep going
                 error = f"{type(exc).__name__}: {exc}"
+                if isinstance(exc, (OSError, ServerError)):    # URLError, refused, timed out, HTTP 4xx/5xx
+                    server_errors += 1
+                    if server_errors >= max_server_errors:
+                        raise BenchAborted(f"{server_errors} server errors in a row, last: {error}") from exc
+                else:
+                    server_errors = 0
+            else:
+                server_errors = 0
             meta = getattr(proposer, "last_meta", None) or {"latency_s": round(time.time() - t0, 3)}
             row = score(case, raw, meta, error, validator, _rules_reference(case, validator))
             row["repeat"] = rep
@@ -394,7 +409,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     validator = ValidatorConfig()
     cases = json.loads(Path(args.cases).read_text())[: args.limit]
     proposer = _proposer_from_args(args, validator)
-    rows = run(cases, proposer, args.repeats, validator)
+    try:
+        rows = run(cases, proposer, args.repeats, validator)
+    except BenchAborted as exc:
+        raise SystemExit(f"bench aborted, nothing written to {args.out}: {exc}")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "results.jsonl", "w") as f:
