@@ -29,7 +29,9 @@ if ! python -c "import f110_gym, stable_baselines3" 2> /dev/null; then
     echo "[setup] Installing dependencies..."
     # pip < 24.1 is needed: newer pip rejects gym 0.19.0's metadata.
     pip install -q pip==24.0 setuptools==65.5.0 wheel==0.38.4
-    pip install -q -r requirements.txt
+    # --exists-action w: src/f110-gym is an empty gitlink folder in a fresh clone; wipe it and let pip clone the
+    # pinned commit, instead of stopping to ask (i)gnore/(w)ipe/(b)ackup/(a)bort.
+    pip install -q --exists-action w -r requirements.txt
 fi
 
 PYTHONPATH="$REPO_DIR/src" python -c "import f110_gym, stable_baselines3, racing_line_learner; print('[setup] OK')"

@@ -13,7 +13,10 @@
 #   LLM_MODEL_G4  model on a G4              (default qwen3.8:27b-q8_0, the best Colab model in the benchmark)
 #   LLM_MODEL     model on any other GPU     (default qwen3.8:27b-q4_K_M)
 #   LLM_THINK     on / off / default / low / medium / high   (default on)
-#   LLM_PROMPT    v1 / v2                    (default v2)
+#   LLM_PROMPT    v1 / v2 / v3               (default v2)
+#   LLM_URL       use an Ollama server that is already running (e.g. on the Windows host from WSL) instead of
+#                 installing and starting one here
+#   RLL_OUTPUT_DIR / CONDA_DIR   output folder and Miniforge location (for running outside Colab)
 #   FORCE_PARALLEL=1 / FORCE_SEQUENTIAL=1    override the G4 check
 #   ALLOW_SPLIT=1 start a seed with this GPU's model even if an unfinished run of it exists with another model
 set -eo pipefail
@@ -45,9 +48,15 @@ EXTRA=()
 if [ "$ARM" = llm ]; then
     MODEL="$LLM_MODEL"; [ "$IS_G4" = 1 ] && MODEL="$LLM_MODEL_G4"
     TAG="$(echo "$MODEL" | tr ':/.' '___')"
-    export OLLAMA_NUM_PARALLEL="$NSEEDS" OLLAMA_KEEP_ALIVE=2h
-    bash "$REPO_DIR/scripts/colab_ollama.sh" "$MODEL"
     EXTRA=(--llm_model "$MODEL" --llm_think "$LLM_THINK" --llm_prompt "$LLM_PROMPT" --llm_timeout 900)
+    if [ -n "${LLM_URL:-}" ]; then
+        curl -s -m 5 "$LLM_URL/api/tags" | grep -q "\"$MODEL\"" \
+            || { echo "[arm] $LLM_URL is not answering or does not have $MODEL"; exit 1; }
+        EXTRA+=(--llm_url "$LLM_URL")
+    else
+        export OLLAMA_NUM_PARALLEL="$NSEEDS" OLLAMA_KEEP_ALIVE=2h
+        bash "$REPO_DIR/scripts/colab_ollama.sh" "$MODEL"
+    fi
     echo "[arm] LLM: $MODEL (think $LLM_THINK, prompt $LLM_PROMPT)"
 fi
 
