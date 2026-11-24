@@ -97,6 +97,10 @@ def judge(before: Dict[str, Any], after: Dict[str, Any], targets: Sequence[str] 
         return {"outcome": OUTCOME_IMPROVED, "reason": f"lap time better {tb:.2f} -> {ta:.2f} s"}
     if ca > cb + config.completion_drop:
         return {"outcome": OUTCOME_IMPROVED, "reason": f"completion rose {cb:.2f} -> {ca:.2f}"}
+    if ca <= 0.0:
+        # Smoothness alone cannot show progress on a policy that completes no probe lap: the metrics then come from
+        # crashing laps, and an "improved" verdict would let the same lever be pushed again at once.
+        return {"outcome": OUTCOME_NEUTRAL, "reason": "no clear change (no completed probe lap to judge smoothness on)"}
     smb, sma = before.get("smoothness") or {}, after.get("smoothness") or {}
     for fid in targets:
         metric = TARGET_METRIC.get(fid)

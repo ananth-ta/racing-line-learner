@@ -40,6 +40,16 @@ class TestJudge(unittest.TestCase):
         self.assertEqual(judge(probe(t=43.0), probe(t=41.0))["outcome"], OUTCOME_IMPROVED)
         self.assertEqual(judge(probe(c=0.25), probe(c=0.75))["outcome"], OUTCOME_IMPROVED)
 
+    def test_smoothness_needs_a_completed_lap(self):
+        before, after = probe(c=0.0, t=None), probe(c=0.0, t=None)
+        before["smoothness"]["steer_change_per_step"], after["smoothness"]["steer_change_per_step"] = 0.0215, 0.0163
+        out = judge(before, after, targets=["weaving"])
+        self.assertEqual(out["outcome"], OUTCOME_NEUTRAL)                 # the 2026-11-24 window-3 case
+        self.assertIn("no completed probe lap", out["reason"])
+        before["completion_rate"] = after["completion_rate"] = 0.25
+        before["lap_time_mean"] = after["lap_time_mean"] = 50.0
+        self.assertEqual(judge(before, after, targets=["weaving"])["outcome"], OUTCOME_IMPROVED)
+
     def test_pace_first_once_reliable(self):
         # Reliable before: a clear lap-time loss is rolled back even though completion rose.
         out = judge(probe(c=0.5, t=43.0), probe(c=1.0, t=46.0))
