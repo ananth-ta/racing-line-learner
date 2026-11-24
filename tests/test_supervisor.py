@@ -39,6 +39,15 @@ class TestJudge(unittest.TestCase):
     def test_improvements(self):
         self.assertEqual(judge(probe(t=43.0), probe(t=41.0))["outcome"], OUTCOME_IMPROVED)
         self.assertEqual(judge(probe(c=0.25), probe(c=0.75))["outcome"], OUTCOME_IMPROVED)
+
+    def test_pace_first_once_reliable(self):
+        # Reliable before: a clear lap-time loss is rolled back even though completion rose.
+        out = judge(probe(c=0.5, t=43.0), probe(c=1.0, t=46.0))
+        self.assertEqual(out["outcome"], OUTCOME_ROLLED_BACK)
+        self.assertIn("although completion rose", out["reason"])
+        # Not yet reliable: the reliability gain counts, the pace loss is accepted.
+        self.assertEqual(judge(probe(c=0.12, t=44.4), probe(c=0.75, t=46.6))["outcome"], OUTCOME_IMPROVED)
+        self.assertEqual(judge(probe(c=0.5, t=43.0), probe(c=1.0, t=44.0))["outcome"], OUTCOME_IMPROVED)  # within margin
         before, after = probe(), probe()
         before["smoothness"]["steer_change_per_step"], after["smoothness"]["steer_change_per_step"] = 0.075, 0.056
         self.assertEqual(judge(before, after, targets=["weaving"])["outcome"], OUTCOME_IMPROVED)  # size, not count

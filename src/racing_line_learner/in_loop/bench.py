@@ -46,7 +46,7 @@ from .validator import (OUTCOME_PENDING, OUTCOME_ROLLED_BACK, KeyHistory, Valida
 
 #: Direction a lever should move to address a finding (+1 raise, -1 lower). Pairs not listed are not scored.
 EXPECTED_DIRECTION: Dict[str, Dict[str, int]] = {
-    "weaving": {"jitter_coef": +1, "steering_penalty_w": +1},
+    "weaving": {"jitter_coef": +1},
     "throttle_jitter": {"throttle_change_coef": +1},
     "crash_hotspot": {"overspeed_coef": +1, "grip_margin": -1, "spawn_corner_mix": +1, "jitter_coef": +1,
                       "steering_penalty_w": +1},

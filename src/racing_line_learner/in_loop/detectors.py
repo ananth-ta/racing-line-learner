@@ -42,7 +42,10 @@ LEVERS = {
     "corkscrew": ("steering_penalty_w", "jitter_coef", "progress_coef"),
     "steering_saturated": ("steering_penalty_w", "jitter_coef"),
     "under_driven_segment": ("time_cost", "progress_coef", "lap_bonus", "grip_margin", "target_speed"),
-    "weaving": ("jitter_coef", "steering_penalty_w"),
+    # Not steering_penalty_w: it penalises steering *magnitude*, so it also limits how hard the car can turn in
+    # corners. In the 2026-11-23 arms every LLM seed raised it for weaving and every LLM seed lapped 2-5 s slower than
+    # the baseline; the measured fix for weaving is jitter_coef (smaller corrections, lever check 2026-11-15).
+    "weaving": ("jitter_coef",),
     "throttle_jitter": ("throttle_change_coef",),
     "inconsistent_line": ("spawn_corner_mix", "jitter_coef", "curriculum"),
     "probe_failures": ("spawn_corner_mix", "overspeed_coef", "grip_margin"),

@@ -44,7 +44,8 @@ SCHEMA = 2
 LEVER_DOCS: Dict[str, str] = {
     "progress_coef": "weight of the reward for progress along the racing line; raising it pays more for covering ground",
     "waypoint_bonus": "bonus per waypoint cleared",
-    "steering_penalty_w": "penalty on steering magnitude; raising it discourages large steering angles",
+    "steering_penalty_w": "penalty on steering magnitude; raising it discourages large steering angles, which also "
+                          "limits how hard the car can turn in corners and can cost corner speed",
     "jitter_coef": "penalty on the change in steering between steps; raising it makes steering corrections smaller "
                    "(it shrinks their size more than their frequency)",
     "throttle_change_coef": "penalty on the change in speed command between steps; raising it smooths the throttle. "

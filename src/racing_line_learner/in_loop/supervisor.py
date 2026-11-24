@@ -57,6 +57,9 @@ class JudgeConfig:
     completion_drop: float = 0.26      # completion may fall by at most this much (two probe runs in eight)
     lap_time_margin_s: float = 1.5     # minimum lap-time margin; widened to 2x the probes' own spread
     target_gain: float = 0.10          # a targeted smoothness metric improving by this fraction counts as improved
+    # Pace first: once the policy completes at least this share of probe laps, a clear lap-time loss is rolled back
+    # even if completion rose. Below it the policy is not yet reliable, and reliability may cost some pace.
+    reliable_completion: float = 0.5
 
 
 #: Which probe smoothness metric a finding's fix should move (lower is better).
@@ -76,8 +79,10 @@ def judge(before: Dict[str, Any], after: Dict[str, Any], targets: Sequence[str] 
     tb, ta = before.get("lap_time_mean"), after.get("lap_time_mean")
     spread = max(before.get("lap_time_std") or 0.0, after.get("lap_time_std") or 0.0)
     margin = max(config.lap_time_margin_s, 2 * spread)
-    if tb is not None and ta is not None and ta > tb + margin and ca <= cb:
-        return {"outcome": OUTCOME_ROLLED_BACK, "reason": f"lap time worse {tb:.2f} -> {ta:.2f} s (margin {margin:.2f})"}
+    if tb is not None and ta is not None and ta > tb + margin and (ca <= cb or cb >= config.reliable_completion):
+        also = f", although completion rose {cb:.2f} -> {ca:.2f}" if ca > cb else ""
+        return {"outcome": OUTCOME_ROLLED_BACK,
+                "reason": f"lap time worse {tb:.2f} -> {ta:.2f} s (margin {margin:.2f}){also}"}
     if tb is not None and ta is not None and ta < tb - margin and ca >= cb - 1e-9:
         return {"outcome": OUTCOME_IMPROVED, "reason": f"lap time better {tb:.2f} -> {ta:.2f} s"}
     if ca > cb + config.completion_drop:

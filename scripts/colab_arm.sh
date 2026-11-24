@@ -16,6 +16,7 @@
 #   LLM_PROMPT    v1 / v2 / v3               (default v2)
 #   LLM_URL       use an Ollama server that is already running (e.g. on the Windows host from WSL) instead of
 #                 installing and starting one here
+#   RUN_SUFFIX    appended to run names (e.g. _j2 for a second version of an arm), so earlier runs are not resumed
 #   RLL_OUTPUT_DIR / CONDA_DIR   output folder and Miniforge location (for running outside Colab)
 #   FORCE_PARALLEL=1 / FORCE_SEQUENTIAL=1    override the G4 check
 #   ALLOW_SPLIT=1 start a seed with this GPU's model even if an unfinished run of it exists with another model
@@ -61,7 +62,7 @@ if [ "$ARM" = llm ]; then
 fi
 
 run_name() {   # seed -> run name
-    if [ "$ARM" = llm ]; then echo "cota_llm_${TAG}_s$1"; else echo "cota_${ARM}_arm_s$1"; fi
+    if [ "$ARM" = llm ]; then echo "cota_llm_${TAG}${RUN_SUFFIX:-}_s$1"; else echo "cota_${ARM}_arm${RUN_SUFFIX:-}_s$1"; fi
 }
 
 # ---- one seed -------------------------------------------------------------------------------------------------

@@ -21,6 +21,8 @@ CURRENT["ent_coef"] = 0.01
 WEAVING = {"id": "weaving", "severity": "medium", "message": "steering reverses 9/s", "waypoints": None, "facts": {}}
 THROTTLE = {"id": "throttle_jitter", "severity": "medium", "message": "speed command jitters", "waypoints": None,
             "facts": {}}
+STEER_SAT = {"id": "steering_saturated", "severity": "medium", "message": "steering at its limit", "waypoints": None,
+             "facts": {}}
 REPORT = {"window": 3, "timesteps": 750_000, "track": "cota", "n_waypoints": 150,
           "probe": {"episodes": 8, "completion_rate": 0.75, "lap_time_mean": 43.9, "lap_time_std": 0.3,
                     "lap_time_best": 43.5, "smoothness": {"steer_reversals_per_s": 9.0}, "failures_at": []},
@@ -51,7 +53,7 @@ class TestLeverStatesAndPrompt(unittest.TestCase):
         states = {s.key: s for s in lever_states(CURRENT, [WEAVING, THROTTLE], hist, window=3)}
         self.assertFalse(states["jitter_coef"].available)                    # rolled back: locked until window 5
         self.assertIn("rolled back", states["jitter_coef"].lock_reason)
-        self.assertTrue(states["steering_penalty_w"].available)             # weaving justifies it
+        self.assertFalse(states["steering_penalty_w"].available)            # weaving no longer justifies it
         self.assertFalse(states["time_cost"].available)                     # no finding justifies it
         tc = states["throttle_change_coef"]
         self.assertEqual((tc.reach_low, tc.reach_high), (0.0, 0.25))         # 25% of 0..1 from 0
@@ -96,7 +98,7 @@ class TestLeverStatesAndPrompt(unittest.TestCase):
         levers = lever_states(CURRENT, [WEAVING], {}, window=3)
         sch = response_schema(levers)
         props = sch["properties"]["changes"]["properties"]
-        self.assertEqual(sorted(props), ["jitter_coef", "steering_penalty_w"])
+        self.assertEqual(sorted(props), ["jitter_coef"])
         self.assertAlmostEqual(props["jitter_coef"]["maximum"], 0.05 + 0.25 * (50 - 0.01), places=4)
         self.assertEqual(sch["properties"]["grounds"]["properties"]["jitter_coef"]["items"]["enum"], ["weaving"])
         self.assertNotIn("properties", response_schema(levers, constrain=False)["properties"]["changes"])
@@ -142,8 +144,8 @@ class TestInertAndSteps(unittest.TestCase):
         self.assertEqual(p.last_meta["attempts"][0]["steps"], steps(jitter_coef=("raise", "full")))
         self.assertEqual(p.last_meta["attempts"][0]["errors"], [])
         half = LLMProposer(FakeBackend(reply(steps(steering_penalty_w=("lower", "half")),
-                                             {"steering_penalty_w": ["weaving"]})), prompt="v3")
-        doc = half.propose(REPORT, [WEAVING], dict(CURRENT), {}, 3, CTX)
+                                             {"steering_penalty_w": ["steering_saturated"]})), prompt="v3")
+        doc = half.propose(REPORT, [WEAVING, STEER_SAT], dict(CURRENT), {}, 3, CTX)
         self.assertAlmostEqual(doc["changes"]["steering_penalty_w"], CURRENT["steering_penalty_w"] - 0.5 * 0.625)
 
     def test_v3_clips_to_range_and_rejects_moves_at_the_limit(self):
@@ -236,10 +238,10 @@ class TestLLMProposer(unittest.TestCase):
 
     def test_retry_feeds_back_validator_errors(self):
         backend = FakeBackend(reply({"time_cost": 0.12}, {"time_cost": ["weaving"]}),       # ungrounded
-                              reply({"steering_penalty_w": 2.5}, {"steering_penalty_w": ["weaving"]}))
+                              reply({"jitter_coef": 10.0}, {"jitter_coef": ["weaving"]}))
         p = LLMProposer(backend)
         doc = p.propose(REPORT, [WEAVING], dict(CURRENT), {}, 3, CTX)
-        self.assertEqual(doc["changes"], {"steering_penalty_w": 2.5})
+        self.assertEqual(doc["changes"], {"jitter_coef": 10.0})
         self.assertEqual(len(p.last_meta["attempts"]), 2)
         self.assertTrue(p.last_meta["attempts"][0]["errors"])
         feedback = backend.calls[1]["messages"][-1]["content"]
@@ -268,7 +270,7 @@ def _write_run(tmp):
     (run / "telemetry").mkdir(parents=True)
     config = {k: getattr(V2, k) for k in WHITELIST_V2 if hasattr(V2, k)}
     for w in (1, 2, 3):
-        rep = dict(REPORT, window=w, config=config, findings=[WEAVING, THROTTLE])
+        rep = dict(REPORT, window=w, config=config, findings=[WEAVING, THROTTLE, STEER_SAT])
         (run / "telemetry" / f"w{w:04d}.json").write_text(json.dumps(rep))
     log = [
         {"type": "proposal", "window": 1, "status": "accepted", "applied": {"jitter_coef": 12.5},
@@ -326,7 +328,7 @@ class TestBench(unittest.TestCase):
     def test_run_scores_llm_and_rules(self):
         with tempfile.TemporaryDirectory() as tmp:
             cases = bench.build_cases([str(_write_run(tmp))])
-        good = reply({"steering_penalty_w": 2.5}, {"steering_penalty_w": ["weaving"]})
+        good = reply({"steering_penalty_w": 2.5}, {"steering_penalty_w": ["steering_saturated"]})
         llm = LLMProposer(FakeBackend(good, "garbage", "garbage", good))
         rows = bench.run(cases, llm, log=lambda *_: None)
         self.assertEqual([r["accepted"] for r in rows], [True, False, True])
@@ -373,8 +375,8 @@ class TestBench(unittest.TestCase):
             rows = bench.run(cases, LLMProposer(FakeBackend(*[text] * 10), max_retries=0), log=lambda *_: None)
             return bench.summarize(rows)["useful"]
 
-        right = reply({"steering_penalty_w": 2.5}, {"steering_penalty_w": ["weaving"]})
-        backwards = reply({"steering_penalty_w": 1.5}, {"steering_penalty_w": ["weaving"]})   # legal, but backwards
+        right = reply({"steering_penalty_w": 2.5}, {"steering_penalty_w": ["steering_saturated"]})
+        backwards = reply({"steering_penalty_w": 1.5}, {"steering_penalty_w": ["steering_saturated"]})  # legal, backwards
         self.assertEqual(score(right), 1.0)
         self.assertEqual(score(backwards), 0.0)
         self.assertEqual(score(reply({}, {})), 0.0)                                           # always abstains
@@ -441,7 +443,7 @@ class TestSupervisedTrainingWithLLM(unittest.TestCase):
     def test_llm_proposals_logged(self):
         from racing_line_learner.in_loop import supervisor as sv
         from racing_line_learner.train.ppo import main
-        good = reply({"steering_penalty_w": 2.2}, {"steering_penalty_w": ["weaving"]})
+        good = reply({"jitter_coef": 10.0}, {"jitter_coef": ["weaving"]})
         backend = FakeBackend(*[good] * 20)
         old_make, old_detect = sv.make_proposer, sv.detect
         sv.make_proposer = lambda name, replay_log=None, validator=None, llm=None: LLMProposer(backend)
@@ -458,7 +460,7 @@ class TestSupervisedTrainingWithLLM(unittest.TestCase):
         first = [e for e in log if e["type"] == "proposal"][0]
         self.assertEqual(first["status"], "accepted")
         self.assertEqual(first["llm"]["model"], "fake-model")
-        self.assertEqual(first["values_before"], {"steering_penalty_w": 2.0})
+        self.assertEqual(first["values_before"], {"jitter_coef": 0.05})
         self.assertIn("Findings", backend.calls[0]["messages"][1]["content"])
 
 
