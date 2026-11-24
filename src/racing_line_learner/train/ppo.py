@@ -104,6 +104,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="In-loop supervisor proposer (needs a laptime-mode preset such as v2).")
     p.add_argument("--window_steps", type=int, default=250_000, help="Supervisor window length in policy steps.")
     p.add_argument("--probe_runs", type=int, default=8, help="Jittered out-laps in each supervisor probe.")
+    p.add_argument("--judge", default="before_after", choices=("before_after", "control"),
+                   help="How the supervisor judges a change: probe before vs after it, or against a control branch "
+                        "trained for the same window without it (about 1.8x the training compute).")
     p.add_argument("--probe_max_sim_steps", type=int, default=30_000, help="Simulator-step cap per probe lap.")
     p.add_argument("--replay_log", default=None, help="proposals.jsonl to replay with --supervisor replay.")
     p.add_argument("--llm_backend", default="ollama", choices=("ollama", "openai"),
@@ -188,7 +191,8 @@ def build_run_spec(args: argparse.Namespace) -> Dict[str, Any]:
         "supervisor": None if args.supervisor == "none" else {
             "proposer": args.supervisor, "window_steps": args.window_steps, "probe_runs": args.probe_runs,
             "probe_max_sim_steps": args.probe_max_sim_steps, "replay_log": args.replay_log,
-            **({"llm": llm_spec(args)} if args.supervisor == "llm" else {})},
+            **({"llm": llm_spec(args)} if args.supervisor == "llm" else {}),
+            **({"judge": args.judge} if args.judge != "before_after" else {})},   # absent = before_after (older runs)
     }
 
 
@@ -350,7 +354,7 @@ def main(argv: Optional[Sequence[str]] = None) -> Path:
         supervisor = SupervisorCallback(
             load_track(args.track), env_config, make_proposer(sv["proposer"], sv["replay_log"], llm=sv.get("llm")), str(run_dir),
             window_steps=sv["window_steps"], probe_runs=sv["probe_runs"], probe_max_sim_steps=sv["probe_max_sim_steps"],
-            source_model=prefix, seed=args.seed, verbose=1)
+            source_model=prefix, seed=args.seed, verbose=1, judge_mode=sv.get("judge", "before_after"))
         callback = CallbackList([callback, supervisor])
     print(f"Training {remaining} steps ({done_steps}/{args.timesteps} done) -> {run_dir}")
     model.learn(total_timesteps=remaining, callback=callback, reset_num_timesteps=False, tb_log_name="ppo")

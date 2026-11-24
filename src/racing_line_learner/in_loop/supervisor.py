@@ -6,11 +6,15 @@ never mixes two configs):
 1. **Look.** Build the telemetry report for the window, run a small
    deterministic *probe* (``probe_runs`` jittered out-laps) for completion, lap
    time and smoothness, and run the detectors.
-2. **Judge** the change made at the previous boundary, if any, by comparing
-   the probe before and after it. A regression beyond the probe's own noise
-   margin is **rolled back**: policy and optimizer restored from the checkpoint
-   taken just before the change, config restored. Rolled-back steps still count
-   toward the run's budget.
+2. **Judge** the change made at the previous boundary, if any. With
+   ``judge_mode="before_after"`` the probe before the change is compared with
+   the probe after it. With ``judge_mode="control"`` a *control branch* (the
+   same checkpoint trained for the same window without the change, in a
+   separate process, see :mod:`racing_line_learner.in_loop.control`) is probed
+   and compared instead, so ordinary learning progress is not credited to the
+   change. A regression beyond the probe's own noise margin is **rolled back**:
+   to the control branch when there is one, otherwise to the checkpoint taken
+   just before the change (rolled-back steps still count toward the budget).
 3. **Propose.** Ask the proposer (rules, LLM, replay, stub) for a schema-v2
    recommendation.
 4. **Guard.** Parse (schema v2) and validate (step cap, cooldowns, grounding).
@@ -26,6 +30,9 @@ never re-applies a decision.
 
 import json
 import math
+import os
+import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -61,6 +68,9 @@ class JudgeConfig:
     # even if completion rose. Below it the policy is not yet reliable, and reliability may cost some pace.
     reliable_completion: float = 0.5
 
+
+#: How a change is judged: against the probe before it, or against a control branch trained without it.
+JUDGE_MODES = ("before_after", "control")
 
 #: Which probe smoothness metric a finding's fix should move (lower is better).
 TARGET_METRIC = {
@@ -238,7 +248,8 @@ class SupervisorCallback(_make_callback_base()):
     def __init__(self, track: Track, base_config: EnvConfig, proposer: Proposer, out_dir: str,
                  window_steps: int = 250_000, probe_runs: int = 8, probe_max_sim_steps: int = 30000,
                  validator: ValidatorConfig = ValidatorConfig(), judge_config: JudgeConfig = JudgeConfig(),
-                 source_model: str = "", seed: int = 0, verbose: int = 0):
+                 source_model: str = "", seed: int = 0, verbose: int = 0, judge_mode: str = "before_after",
+                 control_timeout_s: float = 4 * 3600):
         super().__init__(verbose)
         if base_config.reward_mode != "laptime":
             raise ValueError("the supervisor uses schema v2 levers: train with a laptime-mode preset such as v2")
@@ -253,11 +264,17 @@ class SupervisorCallback(_make_callback_base()):
         self.collector = TelemetryCollector(track, base_config)
         self.state = SupervisorState.load(self.state_path) if self.state_path.exists() else SupervisorState()
         self._boundary_due = False
+        if judge_mode not in JUDGE_MODES:
+            raise ValueError(f"judge_mode must be one of {JUDGE_MODES}, got {judge_mode!r}")
+        self.judge_mode, self.control_timeout_s = judge_mode, control_timeout_s
+        self._control_proc: Optional[subprocess.Popen] = None
 
     # ---------------- helpers ----------------
     def _config(self) -> EnvConfig:
-        env_keys = {k: v for k, v in self.state.current.items() if k not in ALGO_KEYS}
-        return replace(self.base_config, **env_keys)
+        return self._config_from(self.state.current)
+
+    def _config_from(self, values: Dict[str, float]) -> EnvConfig:
+        return replace(self.base_config, **{k: v for k, v in values.items() if k not in ALGO_KEYS})
 
     def _apply_current(self) -> None:
         cfg = self._config()
@@ -279,6 +296,11 @@ class SupervisorCallback(_make_callback_base()):
         if not self.state.current:
             self.state.current = lever_values(self.base_config, float(self.model.ent_coef))
         self._apply_current()      # also restores the supervised config after a restart
+
+    def _on_training_end(self) -> None:
+        if self._control_proc is not None and self._control_proc.poll() is None:
+            self._control_proc.kill()                  # nothing left to judge it against
+        self._control_proc = None
 
     def _on_step(self) -> bool:
         for i, (info, r) in enumerate(zip(self.locals.get("infos", []), self.locals.get("rewards", []))):
@@ -305,7 +327,14 @@ class SupervisorCallback(_make_callback_base()):
         # After a rollback the policy is the restored checkpoint, so the next change must be judged against that
         # checkpoint's own probe (taken when it was saved), not against the probe of the rolled-back policy.
         baseline = rolled_back_to if rolled_back_to is not None else probe
-        self._propose_and_apply(window, report, findings, baseline)
+        total = int(getattr(self.model, "_total_timesteps", 0) or 0)
+        if total and (window + 1) * self.window_steps > total:
+            # A change made now could neither be trained nor judged before the run ends.
+            self._log({"type": "proposal", "window": window, "timesteps": self.num_timesteps,
+                       "proposer": self.proposer.name, "status": "skipped", "errors": [],
+                       "reason": "final window: a change could not be trained or judged before the run ends"})
+        else:
+            self._propose_and_apply(window, report, findings, baseline)
         self.state.window = window
         self.state.save(self.state_path)
         self.collector.reset()
@@ -318,20 +347,74 @@ class SupervisorCallback(_make_callback_base()):
         p = self.state.pending
         if not p:
             return None
-        verdict = judge(p["probe_before"], probe, p.get("targets", ()), self.judge_config)
+        control_path, control_error = self._wait_control(p) if p.get("control") else (None, None)
+        if control_path is not None:
+            from stable_baselines3 import PPO
+            control = PPO.load(control_path, device=self.model.device)
+            reference = probe_policy(control, self.track, self._config_from(p["values_before"]), self.probe_runs,
+                                     self.probe_max_sim_steps, self.seed)
+            mode = "control"
+        else:
+            reference = p["probe_before"]
+            mode = "before_after" + (f" (control branch failed: {control_error})" if control_error else "")
+        verdict = judge(reference, probe, p.get("targets", ()), self.judge_config)
         outcome = verdict["outcome"]
         if outcome == OUTCOME_ROLLED_BACK:
-            self.model.set_parameters(p["checkpoint"], exact_match=True, device=self.model.device)
+            # The control branch is the policy trained this window without the change: switching to it keeps the
+            # window's training. Without one, fall back to the checkpoint taken before the change.
+            restore = control_path if control_path is not None else p["checkpoint"]
+            self.model.set_parameters(restore, exact_match=True, device=self.model.device)
             self.state.current = dict(p["values_before"])
             self._apply_current()
         for key in p["keys"]:
             self.state.history[key] = asdict(KeyHistory(window=p["window"], outcome=outcome, judged_window=window))
         self.state.counts[outcome] = self.state.counts.get(outcome, 0) + 1
-        self._log({"type": "judgement", "window": window, "change_window": p["window"], "keys": p["keys"],
-                   "outcome": outcome, "reason": verdict["reason"],
-                   "probe_before": _probe_brief(p["probe_before"]), "probe_after": _probe_brief(probe)})
+        entry = {"type": "judgement", "window": window, "change_window": p["window"], "keys": p["keys"],
+                 "outcome": outcome, "reason": verdict["reason"], "judge": mode,
+                 "probe_before": _probe_brief(p["probe_before"]), "probe_after": _probe_brief(probe)}
+        if control_path is not None:
+            entry["probe_control"] = _probe_brief(reference)
+        self._log(entry)
         self.state.pending = None
-        return p["probe_before"] if outcome == OUTCOME_ROLLED_BACK else None
+        return reference if outcome == OUTCOME_ROLLED_BACK else None
+
+    # ---------------- control branch ----------------
+    def _launch_control(self, window: int, checkpoint: str, values_before: Dict[str, float]) -> Dict[str, Any]:
+        """Start training ``checkpoint`` for this window under the unchanged config, in a separate process."""
+        stem = self.ckpt_dir / f"control_w{window:04d}"
+        config_path, out, log = stem.with_suffix(".json"), stem.with_suffix(".zip"), stem.with_suffix(".log")
+        save_json(self._config_from(values_before).to_dict(), config_path)
+        # SB3 stops at the first rollout at or past this count, exactly where the main run's next boundary falls.
+        until = (window + 1) * self.window_steps
+        cmd = [sys.executable, "-m", "racing_line_learner.in_loop.control", "--checkpoint", checkpoint,
+               "--config", str(config_path), "--track", self.track.name, "--until", str(until),
+               "--n_envs", str(int(getattr(self.training_env, "num_envs", 1))),
+               "--seed", str(self.seed + 1000 * window + 7), "--out", str(out)]
+        if "ent_coef" in values_before:
+            cmd += ["--ent_coef", str(values_before["ent_coef"])]
+        env = dict(os.environ)
+        src = str(Path(__file__).resolve().parents[2])
+        env["PYTHONPATH"] = src + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        with open(log, "w") as fh:
+            self._control_proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT, env=env)
+        return {"model": str(out), "log": str(log), "until": until, "pid": self._control_proc.pid}
+
+    def _wait_control(self, pending: Dict[str, Any]):
+        """Wait for the pending change's control branch. Returns ``(model path, None)`` or ``(None, reason)``."""
+        info = pending["control"]
+        proc, self._control_proc = self._control_proc, None
+        if proc is not None:
+            try:
+                code = proc.wait(timeout=self.control_timeout_s)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                return None, f"timed out after {self.control_timeout_s:.0f} s"
+            if code != 0:
+                return None, f"exit code {code} (log: {info['log']})"
+        if Path(info["model"]).is_file():
+            return info["model"], None
+        # No process handle: the run was restarted while the branch was training, and the branch never finished.
+        return None, "no control model (run restarted before the control branch finished)"
 
     def _propose_and_apply(self, window: int, report, findings, probe) -> None:
         history = self.state.key_history()
@@ -385,6 +468,8 @@ class SupervisorCallback(_make_callback_base()):
         targets = sorted({g for gs in rec.grounds.values() for g in gs})
         self.state.pending = {"window": window, "keys": sorted(rec.changes), "values_before": before,
                               "checkpoint": ckpt, "probe_before": probe, "targets": targets}
+        if self.judge_mode == "control":
+            self.state.pending["control"] = self._launch_control(window, ckpt, before)
         for key in rec.changes:
             self.state.history[key] = asdict(KeyHistory(window=window, outcome=OUTCOME_PENDING))
         self.state.counts["accepted"] += 1

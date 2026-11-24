@@ -16,6 +16,7 @@
 #   LLM_PROMPT    v1 / v2 / v3               (default v2)
 #   LLM_URL       use an Ollama server that is already running (e.g. on the Windows host from WSL) instead of
 #                 installing and starting one here
+#   JUDGE         before_after / control  (default before_after; control trains a control branch for every change)
 #   RUN_SUFFIX    appended to run names (e.g. _j2 for a second version of an arm), so earlier runs are not resumed
 #   RLL_OUTPUT_DIR / CONDA_DIR   output folder and Miniforge location (for running outside Colab)
 #   FORCE_PARALLEL=1 / FORCE_SEQUENTIAL=1    override the G4 check
@@ -46,10 +47,11 @@ fi
 
 MODEL=""
 EXTRA=()
+[ -n "${JUDGE:-}" ] && EXTRA+=(--judge "$JUDGE")
 if [ "$ARM" = llm ]; then
     MODEL="$LLM_MODEL"; [ "$IS_G4" = 1 ] && MODEL="$LLM_MODEL_G4"
     TAG="$(echo "$MODEL" | tr ':/.' '___')"
-    EXTRA=(--llm_model "$MODEL" --llm_think "$LLM_THINK" --llm_prompt "$LLM_PROMPT" --llm_timeout 900)
+    EXTRA+=(--llm_model "$MODEL" --llm_think "$LLM_THINK" --llm_prompt "$LLM_PROMPT" --llm_timeout 900)
     if [ -n "${LLM_URL:-}" ]; then
         curl -s -m 5 "$LLM_URL/api/tags" | grep -q "\"$MODEL\"" \
             || { echo "[arm] $LLM_URL is not answering or does not have $MODEL"; exit 1; }

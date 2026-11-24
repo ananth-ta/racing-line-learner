@@ -189,8 +189,78 @@ class TestSupervisedTraining(unittest.TestCase):
             run, log, _ = self.train(tmp, "--supervisor", "stub")
             state = json.loads((run / "supervisor_state.json").read_text())
             self.assertEqual(state["current"], lever_values(V2, 0.01))
-            self.assertTrue(all(e["status"] == "none" for e in log if e["type"] == "proposal"))
+            props = [e for e in log if e["type"] == "proposal"]
+            self.assertTrue(all(e["status"] == "none" for e in props[:-1]))
+            self.assertEqual(props[-1]["status"], "skipped")              # final window: nothing left to train
             self.assertEqual(len(list((run / "telemetry").glob("w*.json"))), 4)
+
+
+@requires_sb3
+class TestControlBranchJudge(unittest.TestCase):
+    """judge_mode="control": each change is judged against the same checkpoint trained without it."""
+
+    ARGS = TestSupervisedTraining.ARGS
+
+    def train(self, tmp, *extra):
+        return TestSupervisedTraining.train(self, tmp, *extra)
+
+    def _patch(self, outcome):
+        self.saved = (sv.judge, sv.make_proposer, sv.detect)
+        calls = self.judge_calls = []
+
+        def fake_judge(before, after, targets=(), config=None):
+            calls.append((before, after))
+            return {"outcome": outcome, "reason": "forced"}
+        sv.judge = fake_judge
+        sv.make_proposer = lambda name, replay_log=None, validator=None, llm=None: AlwaysJitter()
+        old_detect = sv.detect
+        sv.detect = lambda report: old_detect(report) + [{"id": "weaving", "severity": "medium", "message": "",
+                                                          "waypoints": None, "facts": {}}]
+
+    def tearDown(self):
+        sv.judge, sv.make_proposer, sv.detect = self.saved
+
+    def test_change_judged_against_control_branch(self):
+        from stable_baselines3 import PPO
+        self._patch(OUTCOME_IMPROVED)
+        with tempfile.TemporaryDirectory() as tmp:
+            run, log, _ = self.train(tmp, "--supervisor", "rules", "--judge", "control")
+            spec = json.loads((run / "run.json").read_text())
+            self.assertEqual(spec["supervisor"]["judge"], "control")
+            judged = [e for e in log if e["type"] == "judgement"]
+            self.assertEqual(len(judged), 3)                                   # windows 1-3; window 4 is the last
+            self.assertTrue(all(j["judge"] == "control" and "probe_control" in j for j in judged))
+            ctrl = run / "supervisor_checkpoints" / "control_w0001.zip"
+            self.assertTrue(ctrl.exists())
+            # The control branch was trained under the unchanged config, up to the main run's next boundary.
+            config = json.loads((run / "supervisor_checkpoints" / "control_w0001.json").read_text())
+            self.assertAlmostEqual(config["jitter_coef"], 0.05)
+            steps = PPO.load(str(ctrl), device="cpu").num_timesteps
+            self.assertGreaterEqual(steps, 2 * 2048)
+            self.assertLess(steps, 2 * 2048 + 1024)                            # one rollout = 2 envs x 512
+            # The judge saw the control branch's probe as "before", not the probe taken before the change.
+            self.assertEqual(sv._probe_brief(self.judge_calls[0][0]), judged[0]["probe_control"])
+            self.assertTrue(all(p["status"] != "skipped" for p in log if p["type"] == "proposal" and p["window"] < 4))
+
+    def test_rollback_switches_to_control_branch(self):
+        self._patch(OUTCOME_ROLLED_BACK)
+        with tempfile.TemporaryDirectory() as tmp:
+            run, log, _ = self.train(tmp, "--supervisor", "rules", "--judge", "control")
+            state = json.loads((run / "supervisor_state.json").read_text())
+            self.assertAlmostEqual(state["current"]["jitter_coef"], 0.05)
+            after_rb = [e for e in log if e["type"] == "proposal" and e["window"] == 2][0]
+            first = [e for e in log if e["type"] == "judgement"][0]
+            # The next change is judged from the policy now in use: the control branch, with its probe.
+            self.assertEqual(after_rb["probe"], first["probe_control"])
+
+    def test_missing_control_branch_falls_back(self):
+        self.saved = (sv.judge, sv.make_proposer, sv.detect)
+        cb = sv.SupervisorCallback(COTA, V2, sv.StubProposer(), "/tmp/unused", judge_mode="control")
+        path, reason = cb._wait_control({"control": {"model": "/nonexistent/control.zip", "log": "x"}})
+        self.assertIsNone(path)
+        self.assertIn("restarted", reason)
+        with self.assertRaises(ValueError):
+            sv.SupervisorCallback(COTA, V2, sv.StubProposer(), "/tmp/unused", judge_mode="nope")
 
 
 if __name__ == "__main__":
