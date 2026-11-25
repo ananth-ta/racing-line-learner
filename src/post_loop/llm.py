@@ -24,9 +24,9 @@ into a reply string:
 Standard library only, so it runs in the Python 3.8 ``f1tenth`` env or any
 newer Python, with no extra packages.
 
-Usage (from the repo root; start llama-server first, see colab_setup.sh):
+Usage (from the repo root; start llama-server on port 8081 first, see
+colab_setup.sh. Port 8080 is taken by Colab itself, so 8081 is the default):
     python -m src.post_loop.llm --run post_loop_runs/<folder> \\
-        --backend openai --url http://127.0.0.1:8080/v1 \\
         --expect 146:misplaced_waypoint --expect 44:spin --trials 3
 """
 import argparse
@@ -163,6 +163,10 @@ Causes you may use:
 {causes}
 
 Rules:
+  - Explain EVERY failure in the data: write a diagnosis for every crash in "crashes" and every
+    entry in "missed_waypoints" and "stuck", even one that happened on a single lap. A rare
+    failure still needs its own diagnosis; don't drop it because another failure is more common.
+    Different failures need separate diagnoses (a crash and a missed waypoint never share one).
   - Write one diagnosis per distinct failure location. waypoints is [first, last] index of the
     affected stretch ([w, w] for a single waypoint).
   - evidence: only numbers copied exactly from the data, using the data's field names.
@@ -179,8 +183,16 @@ Rules:
   - Prefer no change over a change you can't justify from the data. Empty objects are fine.
   - rationale: a few short sentences.
   - schema_version is {SCHEMA_VERSION}."""
+    summary = summarize_analysis(analysis)
+    todo = ([f"crash at waypoint {c['waypoint']} (lap {c['lap']})" for c in summary["crashes"]]
+            + [f"missed waypoint {m['waypoint']} (laps {m['laps']})"
+               for m in summary["missed_waypoints"]]
+            + [f"stuck at waypoint {s['waypoint']} (lap {s['lap']})" for s in summary["stuck"]])
+    checklist = ("Failures to diagnose (each needs its own diagnosis):\n- " + "\n- ".join(todo)
+                 if todo else "No failures were recorded.")
     user = ("Analysis of the evaluation laps:\n"
-            + json.dumps(summarize_analysis(analysis), indent=1)
+            + json.dumps(summary, indent=1)
+            + "\n\n" + checklist
             + "\n\nReply with the recommendation JSON only.")
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -211,7 +223,8 @@ class DummyBackend(Backend):
     name = "dummy"
 
     def complete(self, messages, json_schema):
-        data = json.loads(messages[1]["content"].split("\n", 1)[1].rsplit("\n\n", 1)[0])
+        # The JSON (no blank lines inside) sits between the header line and the checklist.
+        data = json.loads(messages[1]["content"].split("\n", 1)[1].split("\n\n", 1)[0])
         diagnoses = []
         for m in data["missed_waypoints"]:
             w = m["waypoint"]
@@ -251,7 +264,7 @@ class OpenAICompatBackend(Backend):
 
     name = "openai"
 
-    def __init__(self, base_url: str = "http://127.0.0.1:8080/v1", model: str = "local",
+    def __init__(self, base_url: str = "http://127.0.0.1:8081/v1", model: str = "local",
                  api_key: Optional[str] = None, temperature: float = 0.0,
                  max_tokens: int = 1024, timeout_s: float = 300.0, seed: Optional[int] = None):
         self.base_url = base_url.rstrip("/")
@@ -383,7 +396,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--run", required=True, help="folder with analysis.json (from analyze.py)")
     p.add_argument("--backend", choices=["dummy", "openai"], default="openai")
-    p.add_argument("--url", default="http://127.0.0.1:8080/v1",
+    p.add_argument("--url", default="http://127.0.0.1:8081/v1",
                    help="base URL of an OpenAI-compatible server")
     p.add_argument("--model", default="local", help="model name sent to the server")
     p.add_argument("--api-key", default=None)

@@ -65,6 +65,15 @@ class TestPromptAndSchema(unittest.TestCase):
         self.assertIn("speed_floor: current 6.5, allowed 6.5 to 8.0", msgs[0]["content"])
         self.assertIn('"heading_change_deg": 192.0', msgs[1]["content"])
 
+    def test_prompt_lists_every_failure(self):
+        user = build_messages(ANALYSIS)[1]["content"]
+        self.assertIn("- crash at waypoint 44 (lap 2)", user)
+        self.assertIn("- missed waypoint 146 (laps [0, 1])", user)
+        self.assertIn("EVERY failure", build_messages(ANALYSIS)[0]["content"])
+
+    def test_default_url_is_8081(self):
+        self.assertEqual(OpenAICompatBackend().base_url, "http://127.0.0.1:8081/v1")
+
 
 class TestDummyBackend(unittest.TestCase):
     def test_dummy_gets_known_answers(self):
