@@ -48,8 +48,7 @@ from .validator import (OUTCOME_PENDING, OUTCOME_ROLLED_BACK, KeyHistory, Valida
 EXPECTED_DIRECTION: Dict[str, Dict[str, int]] = {
     "weaving": {"jitter_coef": +1},
     "throttle_jitter": {"throttle_change_coef": +1},
-    "crash_hotspot": {"overspeed_coef": +1, "grip_margin": -1, "spawn_corner_mix": +1, "jitter_coef": +1,
-                      "steering_penalty_w": +1},
+    "crash_hotspot": {"spawn_corner_mix": +1, "jitter_coef": +1, "steering_penalty_w": +1},
     "speed_pinned_at_max": {"overspeed_coef": +1, "grip_margin": -1, "time_cost": -1},
     "speed_pinned_at_floor": {"time_cost": +1, "progress_coef": +1},
     "stagnation_dominant": {"progress_coef": +1, "ent_coef": +1},
@@ -57,7 +56,7 @@ EXPECTED_DIRECTION: Dict[str, Dict[str, int]] = {
     "steering_saturated": {"steering_penalty_w": +1, "jitter_coef": +1},
     "under_driven_segment": {"time_cost": +1, "progress_coef": +1, "lap_bonus": +1, "grip_margin": +1},
     "inconsistent_line": {"spawn_corner_mix": +1, "jitter_coef": +1},
-    "probe_failures": {"spawn_corner_mix": +1, "overspeed_coef": +1, "grip_margin": -1},
+    "probe_failures": {"spawn_corner_mix": +1},
 }
 
 DEFAULT_ENT_COEF = 0.01

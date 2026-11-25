@@ -33,8 +33,11 @@ PROBE_COMPLETION_MAX = 0.5
 #: Which whitelisted levers (schema v2 keys; v1 keys in brackets where they differ) can address each finding.
 #: Used by the grounding check: a proposed change must cite a current finding whose lever set contains it.
 LEVERS = {
-    "crash_hotspot": ("overspeed_coef", "grip_margin", "spawn_corner_mix", "jitter_coef", "steering_penalty_w",
-                      "curriculum", "speed_floor", "target_speed"),
+    # Not overspeed_coef / grip_margin for crashes (crash_hotspot, probe_failures): the penalty slows the car in every
+    # corner. In the 2026-11-23/24 arms the 8 runs that trained with it lapped COTA 4.1 s slower on average (49.5 vs
+    # 45.4 s), and the rule-based tuner, the fastest arm, never trained with it. It stays for speed_pinned_at_max.
+    "crash_hotspot": ("spawn_corner_mix", "jitter_coef", "steering_penalty_w", "curriculum", "speed_floor",
+                      "target_speed"),
     "floor_blocks_braking": ("speed_floor",),
     "speed_pinned_at_floor": ("speed_floor", "time_cost", "progress_coef"),
     "speed_pinned_at_max": ("overspeed_coef", "grip_margin", "time_cost"),
@@ -48,7 +51,7 @@ LEVERS = {
     "weaving": ("jitter_coef",),
     "throttle_jitter": ("throttle_change_coef",),
     "inconsistent_line": ("spawn_corner_mix", "jitter_coef", "curriculum"),
-    "probe_failures": ("spawn_corner_mix", "overspeed_coef", "grip_margin"),
+    "probe_failures": ("spawn_corner_mix",),
 }
 
 

@@ -51,7 +51,7 @@ LEVER_DOCS: Dict[str, str] = {
     "throttle_change_coef": "penalty on the change in speed command between steps; raising it smooths the throttle. "
                             "Too high (about 2) made the policy pin its speed at maximum and crash",
     "overspeed_coef": "penalty on speed above grip_margin x the corner's grip limit; raising it teaches braking for "
-                      "corners",
+                      "corners, and slows the car in every corner: in training runs it cost about 4 s per lap",
     "grip_margin": "multiplier on the grip limit used by the overspeed penalty; lower is more conservative",
     "time_cost": "cost per step; raising it pushes for shorter laps",
     "lap_bonus": "bonus for completing a lap",
