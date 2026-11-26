@@ -139,7 +139,7 @@ RULES = (
     ("probe_failures", "spawn_corner_mix", +1),     # reliability first: corner practice changes no reward weight
     ("weaving", "jitter_coef", +1),
     ("throttle_jitter", "throttle_change_coef", +1),
-    ("crash_hotspot", "spawn_corner_mix", +1),      # not overspeed_coef: it costs lap time (detectors.LEVERS)
+    ("crash_hotspot", "overspeed_coef", +1),
     ("speed_pinned_at_max", "overspeed_coef", +1),
     ("inconsistent_line", "spawn_corner_mix", +1),
     ("stagnation_dominant", "progress_coef", +1),

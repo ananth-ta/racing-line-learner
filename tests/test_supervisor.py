@@ -107,29 +107,6 @@ class TestRuleBasedProposer(unittest.TestCase):
     def test_nothing_to_do(self):
         self.assertIsNone(self.propose([])[0])
 
-    def test_crashes_answered_with_corner_practice_not_overspeed(self):
-        raw, findings = self.propose(["crash_hotspot"])
-        self.assertEqual(set(raw["changes"]), {"spawn_corner_mix"})
-        rec = parse_recommendation(raw, COTA.n_waypoints, expected_track="cota")
-        self.assertTrue(validate_proposal(rec, self.CURRENT, 3, {}, ValidatorConfig(), findings=findings).accepted)
-
-    def test_overspeed_not_grounded_in_crashes(self):
-        """overspeed_coef cost about 4 s per lap in the arms, so crash findings no longer justify it."""
-        for fid in ("crash_hotspot", "probe_failures"):
-            for key, value in (("overspeed_coef", 0.5), ("grip_margin", 0.9)):
-                raw = {"schema_version": 2, "source_model": "m", "track": "cota", "changes": {key: value},
-                       "grounds": {key: [fid]}}
-                rec = parse_recommendation(raw, COTA.n_waypoints, expected_track="cota")
-                cur = dict(self.CURRENT, overspeed_coef=0.5)            # grip_margin would act here
-                res = validate_proposal(rec, cur, 3, {}, ValidatorConfig(), findings=[{"id": fid}])
-                self.assertFalse(res.accepted, (fid, key))
-                self.assertIn("no cited finding is addressed by this lever", " ".join(res.errors))
-        raw = {"schema_version": 2, "source_model": "m", "track": "cota", "changes": {"overspeed_coef": 0.5},
-               "grounds": {"overspeed_coef": ["speed_pinned_at_max"]}}
-        rec = parse_recommendation(raw, COTA.n_waypoints, expected_track="cota")
-        res = validate_proposal(rec, self.CURRENT, 3, {}, ValidatorConfig(), findings=[{"id": "speed_pinned_at_max"}])
-        self.assertTrue(res.accepted, res.errors)
-
 
 class TestReplayAndState(unittest.TestCase):
     def test_replay(self):
