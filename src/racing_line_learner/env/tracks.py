@@ -57,6 +57,14 @@ TRACKS: Dict[str, TrackSpec] = {
     # Control: the same Sepang image scaled 1.65x so the track is as wide as COTA's (~4 m).
     "sepang_wide": TrackSpec(name="sepang_wide", map_path="maps/sepang_wide",
                              waypoints_csv="maps/sepang_wide_optimal_line.csv"),
+    # Held-out layouts at COTA's width (f1tenth_racetracks maps scaled to ~4 m, so they test the layout, not
+    # width), all clockwise like the real circuits. Racing lines by linemapper's method; for Monza and Silverstone
+    # the skeleton was ordered along the collection's centre line, because nearest-neighbour ordering jumps across
+    # the track where two parts run close together.
+    "monza": TrackSpec(name="monza", map_path="maps/monza", waypoints_csv="maps/monza_optimal_line.csv"),
+    "budapest": TrackSpec(name="budapest", map_path="maps/budapest", waypoints_csv="maps/budapest_optimal_line.csv"),
+    "silverstone": TrackSpec(name="silverstone", map_path="maps/silverstone",
+                             waypoints_csv="maps/silverstone_optimal_line.csv"),
 }
 
 

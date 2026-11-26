@@ -1,0 +1,7 @@
+# f1tenth_racetracks Monza map (GPL-3.0), scaled 2.0352x so the track width matches COTA's (~4.05 m); image upsampled 2x (nearest) to keep the resolution near sepang_wide's
+image: monza.png
+resolution: 0.097536
+origin: [-101.431719, -102.794799, 0.000000]
+negate: 0
+occupied_thresh: 0.45
+free_thresh: 0.196

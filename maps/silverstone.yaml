@@ -1,0 +1,7 @@
+# f1tenth_racetracks Silverstone map (GPL-3.0), scaled 1.9565x so the track width matches COTA's (~4.05 m); image upsampled 2x (nearest) to keep the resolution near sepang_wide's
+image: silverstone.png
+resolution: 0.075443
+origin: [-85.744216, -102.333686, 0.000000]
+negate: 0
+occupied_thresh: 0.45
+free_thresh: 0.196

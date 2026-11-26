@@ -1,0 +1,7 @@
+# f1tenth_racetracks Budapest map (GPL-3.0), scaled 1.6008x so the track width matches COTA's (~4.05 m)
+image: budapest.png
+resolution: 0.103187
+origin: [-96.414750, -34.717321, 0.000000]
+negate: 0
+occupied_thresh: 0.45
+free_thresh: 0.196
